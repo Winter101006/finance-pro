@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="geminiGrad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2563EB"/>
+      <stop offset="50%" stop-color="#4F46E5"/>
+      <stop offset="100%" stop-color="#9333EA"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#geminiGrad)"/>
+  <path d="M144 176C144 158.327 158.327 144 176 144H336C353.673 144 368 158.327 368 176V336C368 353.673 353.673 368 336 368H176C158.327 368 144 353.673 144 336V176Z" fill="white" fill-opacity="0.16"/>
+  <path d="M180 256H332M256 180V332" stroke="white" stroke-width="36" stroke-linecap="round"/>
+  <circle cx="332" cy="180" r="24" fill="#34D399"/>
+</svg>

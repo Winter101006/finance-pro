@@ -1,0 +1,18 @@
+{
+  "name": "Finance Pro · Quản Lý Chi Tiêu Thông Minh",
+  "short_name": "Finance Pro",
+  "description": "Ứng dụng quản lý chi tiêu đa người dùng tích hợp AI giọng nói tiếng Việt cho Sinh viên và Gia đình",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F4F7FB",
+  "theme_color": "#4F46E5",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "name": "finance-pro",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ứng dụng quản lý chi tiêu thông minh đa người dùng (Standard & Senior Mode) với AI Gemini & Supabase",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test:parser": "tsx scripts/test-parser-and-gemini.ts"
+  },
+  "dependencies": {
+    "@google/genai": "latest",
+    "@supabase/ssr": "^0.5.2",
+    "@supabase/supabase-js": "^2.48.1",
+    "lucide-react": "^0.475.0",
+    "next": "14.2.24",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.16",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
