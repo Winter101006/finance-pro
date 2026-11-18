@@ -1,6 +1,6 @@
 export type UIMode = 'standard' | 'senior';
 
-export type WalletType = 'personal' | 'family';
+export type WalletType = 'personal' | 'family' | 'savings';
 
 export type TransactionType = 'expense' | 'income';
 
@@ -31,6 +31,8 @@ export interface Wallet {
   name: string;
   type: WalletType;
   ownerId: string;
+  inviteCode?: string;
+  memberIds?: string[];
   monthlyBudget: number;
   weeklyBudget: number;
   createdAt: string;

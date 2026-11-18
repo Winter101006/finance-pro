@@ -1,43 +1,38 @@
 'use client';
 
 import {
-  Cloud,
   GraduationCap,
   HeartHandshake,
+  Loader2,
+  LogOut,
   Moon,
   Sparkles,
   Sun,
-  UserCheck,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AuthAndCloudModal } from '@/components/AuthAndCloudModal';
+import { AuthScreen } from '@/components/AuthScreen';
 import { SeniorModeView } from '@/components/SeniorModeView';
 import { StandardModeView } from '@/components/StandardModeView';
-import { DEMO_PROFILES, DEMO_WALLETS } from '@/data/categories';
-import {
-  FinanceRepository,
-  resetLocalDemoData,
-  setLocalPersona,
-  type DemoPersonaKey,
-} from '@/lib/dataAdapter';
+import { FinanceRepository } from '@/lib/dataAdapter';
 import type {
+  CategorySlug,
   FinanceTransaction,
   ParseExpenseResponse,
+  TransactionType,
   UIMode,
   UserProfile,
   Wallet,
+  WalletType,
 } from '@/types/finance';
 
 export default function FinanceProPage() {
   const [hydrated, setHydrated] = useState(false);
-  const [profile, setProfile] = useState<UserProfile>(DEMO_PROFILES.student);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [uiMode, setUiMode] = useState<UIMode>('standard');
-  const [wallets, setWallets] = useState<Wallet[]>(DEMO_WALLETS);
-  const [activeWalletId, setActiveWalletId] = useState<string>(DEMO_WALLETS[0].id);
+  const [wallets, setWallets] = useState<Wallet[]>([]);
+  const [activeWalletId, setActiveWalletId] = useState<string>('');
   const [transactions, setTransactions] = useState<FinanceTransaction[]>([]);
-  const [isCloud, setIsCloud] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
-  const [cloudModalOpen, setCloudModalOpen] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [lastAddedBatch, setLastAddedBatch] = useState<{
     ids: string[];
@@ -61,80 +56,82 @@ export default function FinanceProPage() {
     }
   }, []);
 
-  const refreshProfileAndWallets = useCallback(async () => {
-    const res = await FinanceRepository.getCurrentUserProfile();
-    setIsCloud(res.isCloud);
-    if (res.profile) {
+  const refreshSession = useCallback(async () => {
+    const res = await FinanceRepository.getCurrentSession();
+    if (res.profile && res.wallets.length > 0) {
       setProfile(res.profile);
       setUiMode(res.profile.uiMode);
-      const list = res.wallets.length > 0 ? res.wallets : DEMO_WALLETS;
-      setWallets(list);
+      setWallets(res.wallets);
       const defaultW =
-        list.find((w) => w.id === res.profile?.defaultWalletId)?.id || list[0].id;
+        res.wallets.find((w) => w.id === res.profile?.defaultWalletId)?.id ||
+        res.wallets[0].id;
       setActiveWalletId(defaultW);
     } else {
-      // Cloud configured but not logged in yet -> use local student preview until logged in
-      setProfile(DEMO_PROFILES.student);
-      setWallets(DEMO_WALLETS);
-      setActiveWalletId(DEMO_WALLETS[0].id);
+      setProfile(null);
+      setWallets([]);
+      setActiveWalletId('');
+      setTransactions([]);
     }
   }, []);
 
   const refreshTransactions = useCallback(async (walletId: string) => {
-    if (!walletId) return;
+    if (!walletId) {
+      setTransactions([]);
+      return;
+    }
     const list = await FinanceRepository.getTransactions(walletId);
     setTransactions(list);
   }, []);
 
   useEffect(() => {
-    setHydrated(true);
-    refreshProfileAndWallets();
-  }, [refreshProfileAndWallets]);
+    refreshSession().finally(() => {
+      setHydrated(true);
+    });
+  }, [refreshSession]);
 
   useEffect(() => {
-    if (hydrated && activeWalletId) {
+    if (hydrated && profile && activeWalletId) {
       refreshTransactions(activeWalletId);
     }
-  }, [hydrated, activeWalletId, refreshTransactions]);
+  }, [hydrated, profile, activeWalletId, refreshTransactions]);
 
   // Manage dark mode class (Senior Mode always uses high-contrast light surface for WCAG AAA)
   useEffect(() => {
     const root = document.documentElement;
-    if (darkMode && uiMode === 'standard') {
+    if (darkMode && uiMode === 'standard' && profile) {
       root.classList.add('dark');
     } else {
       root.classList.remove('dark');
     }
-  }, [darkMode, uiMode]);
+  }, [darkMode, uiMode, profile]);
 
   const activeWallet = useMemo(
-    () => wallets.find((w) => w.id === activeWalletId) || wallets[0] || DEMO_WALLETS[0],
+    () => wallets.find((w) => w.id === activeWalletId) || wallets[0] || null,
     [wallets, activeWalletId]
   );
 
-  // Switch between Student (Standard Mode) & Parent (Senior Mode) in 1 click
-  const handleSwitchPersonaAndMode = async (targetPersona: DemoPersonaKey) => {
+  const handleSwitchUiMode = async (nextMode: UIMode) => {
+    if (!profile) return;
     setLastAddedBatch(null);
-    if (!FinanceRepository.isCloudEnabled()) {
-      const nextProfile = setLocalPersona(targetPersona);
-      setProfile(nextProfile);
-      setUiMode(nextProfile.uiMode);
-      setActiveWalletId(nextProfile.defaultWalletId);
-      await refreshTransactions(nextProfile.defaultWalletId);
-    } else {
-      const nextMode: UIMode = targetPersona === 'parent' ? 'senior' : 'standard';
-      setUiMode(nextMode);
-      const targetWallet = wallets.find((w) =>
-        targetPersona === 'parent' ? w.type === 'family' : w.type === 'personal'
-      );
-      if (targetWallet) {
-        setActiveWalletId(targetWallet.id);
-      }
+    setUiMode(nextMode);
+    const updated = await FinanceRepository.updateUserUiMode(profile.id, nextMode);
+    if (updated) {
+      setProfile(updated);
     }
+  };
+
+  const handleSignOut = async () => {
+    await FinanceRepository.signOutUser();
+    setProfile(null);
+    setWallets([]);
+    setActiveWalletId('');
+    setTransactions([]);
+    setLastAddedBatch(null);
   };
 
   // Submit natural Vietnamese input to /api/parse-expense (Gemini AI + Vietnamese NLP fallback)
   const handleSubmitNaturalInput = async (rawText: string) => {
+    if (!profile || !activeWallet) return;
     setIsParsing(true);
     try {
       const response = await fetch('/api/parse-expense', {
@@ -147,7 +144,9 @@ export default function FinanceProPage() {
 
       if (!parsed.items || parsed.items.length === 0) {
         if (uiMode === 'senior') {
-          speakVietnamese(parsed.spokenSummaryVi || 'Chưa nghe rõ số tiền, xin nói lại.');
+          speakVietnamese(
+            parsed.spokenSummaryVi || 'Chưa nghe rõ số tiền, xin nói lại.'
+          );
         }
         return;
       }
@@ -162,7 +161,8 @@ export default function FinanceProPage() {
       await refreshTransactions(activeWallet.id);
 
       const engineLabel =
-        parsed.engine === 'gemini-developer-api' || parsed.engine === 'gemini-vertex-express'
+        parsed.engine === 'gemini-developer-api' ||
+        parsed.engine === 'gemini-vertex-express'
           ? `Gemini AI (${parsed.modelUsed || '3.5-flash-lite'})`
           : 'Vietnamese NLP';
 
@@ -172,7 +172,6 @@ export default function FinanceProPage() {
         engine: engineLabel,
       });
 
-      // Automatically speak confirmation aloud in Senior Mode
       if (uiMode === 'senior') {
         speakVietnamese(parsed.spokenSummaryVi);
       }
@@ -181,8 +180,56 @@ export default function FinanceProPage() {
     }
   };
 
+  const handleAddManualTransaction = async (params: {
+    type: TransactionType;
+    amount: number;
+    categorySlug: CategorySlug;
+    description: string;
+    transactionDate: string;
+  }) => {
+    if (!profile || !activeWallet) return;
+    const created = await FinanceRepository.addManualTransaction({
+      walletId: activeWallet.id,
+      user: profile,
+      ...params,
+    });
+    await refreshTransactions(activeWallet.id);
+    setLastAddedBatch({
+      ids: [created.id],
+      summary: `Đã lưu ${params.type === 'income' ? 'khoản thu' : 'khoản chi'} "${
+        params.description
+      }" (${params.amount.toLocaleString('vi-VN')} ₫)`,
+      engine: 'Nhập thủ công',
+    });
+  };
+
+  const handleCreateWallet = async (params: {
+    name: string;
+    type: WalletType;
+    monthlyBudget: number;
+    weeklyBudget: number;
+  }) => {
+    if (!profile) return;
+    const created = await FinanceRepository.createWallet({
+      userId: profile.id,
+      ...params,
+    });
+    await refreshSession();
+    setActiveWalletId(created.id);
+  };
+
+  const handleJoinFamilyWallet = async (inviteCode: string) => {
+    if (!profile) return;
+    const joined = await FinanceRepository.joinFamilyWalletByCode(
+      profile.id,
+      inviteCode
+    );
+    await refreshSession();
+    setActiveWalletId(joined.id);
+  };
+
   const handleUndoLastBatch = async () => {
-    if (!lastAddedBatch || lastAddedBatch.ids.length === 0) return;
+    if (!lastAddedBatch || lastAddedBatch.ids.length === 0 || !activeWallet) return;
     await FinanceRepository.deleteTransactionsByIds(lastAddedBatch.ids);
     setLastAddedBatch(null);
     await refreshTransactions(activeWallet.id);
@@ -193,33 +240,62 @@ export default function FinanceProPage() {
 
   const handleUpdateTransaction = async (
     id: string,
-    updates: Partial<Pick<FinanceTransaction, 'amount' | 'description' | 'categorySlug' | 'type'>>
+    updates: Partial<
+      Pick<FinanceTransaction, 'amount' | 'description' | 'categorySlug' | 'type'>
+    >
   ) => {
+    if (!activeWallet) return;
     await FinanceRepository.updateTransaction(id, updates);
     await refreshTransactions(activeWallet.id);
   };
 
   const handleDeleteTransaction = async (id: string) => {
+    if (!activeWallet) return;
     await FinanceRepository.deleteTransactionsByIds([id]);
     await refreshTransactions(activeWallet.id);
   };
 
-  const handleUpdateBudget = async (monthly: number, weekly: number) => {
-    await FinanceRepository.updateWalletBudget(activeWallet.id, monthly, weekly);
-    await refreshProfileAndWallets();
-  };
-
-  const handleResetDemo = () => {
-    const res = resetLocalDemoData();
-    setWallets(res.wallets);
+  const handleClearWalletTransactions = async () => {
+    if (!activeWallet) return;
+    await FinanceRepository.clearWalletTransactions(activeWallet.id);
     setLastAddedBatch(null);
-    refreshTransactions(activeWallet.id);
-  };
-
-  const handleSyncLocalToCloud = async () => {
-    await FinanceRepository.syncLocalDataToCloud(activeWallet.id, profile.id);
     await refreshTransactions(activeWallet.id);
   };
+
+  const handleUpdateBudget = async (monthly: number, weekly: number) => {
+    if (!activeWallet) return;
+    await FinanceRepository.updateWalletBudget(activeWallet.id, monthly, weekly);
+    await refreshSession();
+  };
+
+  if (!hydrated) {
+    return (
+      <div className="flex min-h-screen items-center justify-center gemini-mesh-bg">
+        <div className="flex items-center gap-3 rounded-2xl border border-indigo-100 bg-white px-5 py-3.5 text-sm font-bold text-indigo-700 shadow-sm">
+          <Loader2 className="h-5 w-5 animate-spin text-indigo-600" />
+          <span>Đang tải hệ thống Finance Pro...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // If no user is logged in, display the mandatory Login & Registration Portal
+  if (!profile || !activeWallet) {
+    return (
+      <AuthScreen
+        onAuthenticated={(res) => {
+          setProfile(res.profile);
+          setUiMode(res.profile.uiMode);
+          setWallets(res.wallets);
+          const defaultW =
+            res.wallets.find((w) => w.id === res.profile.defaultWalletId)?.id ||
+            res.wallets[0]?.id ||
+            '';
+          setActiveWalletId(defaultW);
+        }}
+      />
+    );
+  }
 
   return (
     <div
@@ -227,7 +303,7 @@ export default function FinanceProPage() {
         uiMode === 'senior' ? 'bg-[#FFFDF9] text-slate-950' : 'gemini-mesh-bg'
       }`}
     >
-      {/* STICKY TOP HEADER BAR (Dual-Mode Switcher + Persona + Cloud Status) */}
+      {/* STICKY TOP HEADER BAR (User Identity + Dual-Mode Switcher + Sign Out) */}
       <header
         className={`sticky top-0 z-30 h-16 border-b backdrop-blur-xl ${
           uiMode === 'senior'
@@ -236,31 +312,34 @@ export default function FinanceProPage() {
         }`}
       >
         <div className="mx-auto flex h-full max-w-7xl items-center justify-between gap-2 px-4 sm:px-6">
-          {/* Left: Brand Identity */}
+          {/* Left: Brand Identity & Logged-In User */}
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-500/25">
               <Sparkles className="h-5 w-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-base font-extrabold tracking-tight bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text text-transparent dark:from-sky-400 dark:via-indigo-300 dark:to-purple-400 sm:text-lg">
+                <span className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text text-base font-extrabold tracking-tight text-transparent dark:from-sky-400 dark:via-indigo-300 dark:to-purple-400 sm:text-lg">
                   Finance Pro
                 </span>
                 <span className="hidden rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 font-mono text-[10px] font-bold text-indigo-700 dark:border-indigo-400/30 dark:bg-indigo-500/15 dark:text-indigo-300 md:inline-block">
-                  Gemini AI · Dual-UX
+                  {profile.email}
                 </span>
               </div>
-              <div className="hidden text-[11px] font-medium text-slate-500 dark:text-slate-400 sm:block">
-                {profile.displayName} · {activeWallet.name}
+              <div className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                Xin chào, <span className="font-extrabold">{profile.displayName}</span> ·{' '}
+                <span className="text-indigo-600 dark:text-indigo-300">
+                  {activeWallet.name}
+                </span>
               </div>
             </div>
           </div>
 
-          {/* Center: 1-Click Dual-Mode & Persona Switcher */}
+          {/* Center: 1-Click UI Mode Switcher (Standard vs Senior Mode) */}
           <div className="inline-flex items-center rounded-2xl border-2 border-indigo-200 bg-slate-100/90 p-1 dark:border-indigo-500/30 dark:bg-[#131B2E]">
             <button
               type="button"
-              onClick={() => handleSwitchPersonaAndMode('student')}
+              onClick={() => handleSwitchUiMode('standard')}
               className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-extrabold transition ${
                 uiMode === 'standard'
                   ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white shadow-sm'
@@ -268,12 +347,13 @@ export default function FinanceProPage() {
               }`}
             >
               <GraduationCap className="h-4 w-4" />
-              <span>Sinh viên (Standard)</span>
+              <span className="hidden sm:inline">Giao diện</span>
+              <span>Tiêu chuẩn</span>
             </button>
 
             <button
               type="button"
-              onClick={() => handleSwitchPersonaAndMode('parent')}
+              onClick={() => handleSwitchUiMode('senior')}
               className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-extrabold transition ${
                 uiMode === 'senior'
                   ? 'bg-indigo-900 text-white shadow-sm'
@@ -281,30 +361,12 @@ export default function FinanceProPage() {
               }`}
             >
               <HeartHandshake className="h-4 w-4" />
-              <span>Bố / Mẹ (Chữ Lớn)</span>
+              <span>Chữ Lớn (Bố Mẹ)</span>
             </button>
           </div>
 
-          {/* Right: Cloud Status & Theme Toggle */}
+          {/* Right: Theme Toggle & Sign Out Button */}
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setCloudModalOpen(true)}
-              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-indigo-200 bg-white px-3 text-xs font-bold text-indigo-700 shadow-2xs transition hover:bg-indigo-50 dark:border-indigo-500/25 dark:bg-[#131B2E] dark:text-indigo-300"
-            >
-              {isCloud ? (
-                <>
-                  <Cloud className="h-3.5 w-3.5 text-emerald-500" />
-                  <span className="hidden sm:inline">Supabase Cloud</span>
-                </>
-              ) : (
-                <>
-                  <UserCheck className="h-3.5 w-3.5 text-indigo-500" />
-                  <span className="hidden sm:inline">Local-First (Đám mây)</span>
-                </>
-              )}
-            </button>
-
             {uiMode === 'standard' && (
               <button
                 type="button"
@@ -315,6 +377,16 @@ export default function FinanceProPage() {
                 {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50/80 px-3 text-xs font-extrabold text-rose-700 transition hover:bg-rose-100 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-200"
+              title="Đăng xuất khỏi tài khoản hiện tại"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              <span>Đăng xuất</span>
+            </button>
           </div>
         </div>
       </header>
@@ -328,17 +400,22 @@ export default function FinanceProPage() {
             onSelectWallet={setActiveWalletId}
             transactions={transactions}
             onSubmitNaturalInput={handleSubmitNaturalInput}
+            onAddManualTransaction={handleAddManualTransaction}
+            onCreateWallet={handleCreateWallet}
+            onJoinFamilyWallet={handleJoinFamilyWallet}
             isParsing={isParsing}
             lastAddedBatch={lastAddedBatch}
             onUndoLastBatch={handleUndoLastBatch}
             onUpdateTransaction={handleUpdateTransaction}
             onDeleteTransaction={handleDeleteTransaction}
+            onClearWalletTransactions={handleClearWalletTransactions}
             onUpdateBudget={handleUpdateBudget}
-            onResetDemoData={handleResetDemo}
           />
         ) : (
           <SeniorModeView
             activeWallet={activeWallet}
+            wallets={wallets}
+            onSelectWallet={setActiveWalletId}
             transactions={transactions}
             onSubmitNaturalInput={handleSubmitNaturalInput}
             isParsing={isParsing}
@@ -349,19 +426,6 @@ export default function FinanceProPage() {
           />
         )}
       </main>
-
-      {/* Cloud & Auth Configuration Modal */}
-      <AuthAndCloudModal
-        open={cloudModalOpen}
-        onClose={() => setCloudModalOpen(false)}
-        isCloudConfigured={FinanceRepository.isCloudEnabled()}
-        isLoggedIn={isCloud && Boolean(profile.email)}
-        userEmail={profile.email}
-        onSyncLocalToCloud={handleSyncLocalToCloud}
-        onAuthSuccess={() => {
-          refreshProfileAndWallets();
-        }}
-      />
     </div>
   );
 }

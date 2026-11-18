@@ -8,6 +8,7 @@ import {
   Trash2,
   Undo2,
   Volume2,
+  Wallet as WalletIcon,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { CATEGORY_BY_SLUG } from '@/data/categories';
@@ -17,6 +18,8 @@ import { CategoryIcon } from './CategoryIcon';
 
 interface SeniorModeViewProps {
   activeWallet: Wallet;
+  wallets: Wallet[];
+  onSelectWallet: (walletId: string) => void;
   transactions: FinanceTransaction[];
   onSubmitNaturalInput: (text: string) => Promise<void>;
   isParsing: boolean;
@@ -48,6 +51,8 @@ const QUICK_DENOMINATIONS = [
 
 export function SeniorModeView({
   activeWallet,
+  wallets,
+  onSelectWallet,
   transactions,
   onSubmitNaturalInput,
   isParsing,
@@ -71,7 +76,9 @@ export function SeniorModeView({
 
     if (!SpeechRec) {
       setShowKeyboard(true);
-      onSpeakVietnamese('Thiết bị này chưa bật micro, mời bố mẹ bấm nút nhập bằng bàn phím bên dưới.');
+      onSpeakVietnamese(
+        'Thiết bị này chưa bật micro, mời bố mẹ bấm nút nhập bằng bàn phím bên dưới.'
+      );
       return;
     }
 
@@ -138,7 +145,6 @@ export function SeniorModeView({
       (tx) => new Date(tx.transactionDate).toDateString() === todayStr
     );
 
-    // If no transactions have today's exact date yet, show the 5 most recent transactions
     const displayTxs = (todayTxs.length > 0 ? todayTxs : transactions).slice(0, 5);
     const totalSpentToday = displayTxs
       .filter((tx) => tx.type === 'expense')
@@ -153,8 +159,8 @@ export function SeniorModeView({
   return (
     <div className="mx-auto max-w-3xl space-y-6 pb-20 text-slate-950">
       {/* HIGH-CONTRAST HEADER BANNER (WCAG AAA) */}
-      <div className="rounded-3xl border-4 border-indigo-900 bg-white p-6 shadow-md">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="rounded-3xl border-4 border-indigo-900 bg-white p-6 shadow-md space-y-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <span className="inline-block rounded-xl bg-indigo-900 px-3.5 py-1 text-base font-extrabold text-white">
               CHẾ ĐỘ CHỮ LỚN DÀNH CHO BỐ MẸ
@@ -172,6 +178,33 @@ export function SeniorModeView({
             </div>
           </div>
         </div>
+
+        {/* Big Wallet Selector if user has multiple wallets */}
+        {wallets.length > 1 && (
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t-2 border-slate-200">
+            <span className="text-base font-extrabold text-slate-700 mr-1">
+              Chọn sổ chi tiêu:
+            </span>
+            {wallets.map((w) => {
+              const active = w.id === activeWallet.id;
+              return (
+                <button
+                  key={w.id}
+                  type="button"
+                  onClick={() => onSelectWallet(w.id)}
+                  className={`inline-flex min-h-[48px] items-center gap-2 rounded-2xl border-2 px-4 py-2 text-base font-black transition ${
+                    active
+                      ? 'border-indigo-950 bg-indigo-900 text-white'
+                      : 'border-slate-700 bg-slate-100 text-slate-900 hover:bg-indigo-50'
+                  }`}
+                >
+                  <WalletIcon className="h-5 w-5" />
+                  <span>{w.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* GIANT PRIMARY MICROPHONE ACTION CARD */}
@@ -234,7 +267,7 @@ export function SeniorModeView({
           </div>
         )}
 
-        {/* Quick 1-Tap Voice Simulation Buttons (For easy testing or 1-tap common items) */}
+        {/* Quick 1-Tap Common Phrases */}
         <div className="pt-2 text-left">
           <div className="text-lg font-extrabold text-slate-800 mb-2.5">
             Hoặc chạm 1 lần vào câu mẫu thường dùng:
@@ -306,7 +339,7 @@ export function SeniorModeView({
             </div>
 
             <div>
-              <label className="block text-xl font-black text-slate-950 mb-2">
+              <label className="block text-xl font-black text-slate-900 mb-2">
                 2. Số tiền bao nhiêu đồng?
               </label>
               <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 mb-3">
@@ -402,7 +435,7 @@ export function SeniorModeView({
 
         {todayStats.recentFive.length === 0 ? (
           <div className="py-8 text-center text-xl font-bold text-slate-600">
-            Hôm nay chưa ghi khoản chi tiêu nào.
+            Sổ chi tiêu này hiện đang ở mức 0 đồng (chưa có giao dịch nào).
           </div>
         ) : (
           <div className="divide-y-2 divide-slate-200">
@@ -419,7 +452,7 @@ export function SeniorModeView({
                       <div className="text-xl font-black text-slate-950 sm:text-2xl">
                         {tx.description}
                       </div>
-                      <div className="mt-1 flex items-center gap-2 text-base font-bold text-slate-700">
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-base font-bold text-slate-700">
                         <span className="rounded-lg bg-slate-200 px-2.5 py-0.5 text-slate-900">
                           Mục: {cat.name}
                         </span>
@@ -430,6 +463,11 @@ export function SeniorModeView({
                             minute: '2-digit',
                           })}
                         </span>
+                        {tx.userDisplayName && (
+                          <span className="rounded-lg bg-indigo-100 px-2 py-0.5 text-sm font-extrabold text-indigo-900">
+                            {tx.userDisplayName}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
