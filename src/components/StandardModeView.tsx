@@ -31,6 +31,7 @@ import type {
   Wallet,
   WalletType,
 } from '@/types/finance';
+import { AnalyticsChartsSection } from './AnalyticsChartsSection';
 import { CategoryIcon } from './CategoryIcon';
 
 interface StandardModeViewProps {
@@ -808,7 +809,14 @@ export function StandardModeView({
         </div>
       </div>
 
-      {/* 4. CATEGORY BREAKDOWN + TRANSACTION LEDGER (12-COL SPLIT) */}
+      {/* 4. INTERACTIVE ANALYTICS CHARTS (Donut Category Chart + Cashflow Timeline Combo Chart) */}
+      <AnalyticsChartsSection
+        transactions={transactions}
+        selectedCategory={filterCategory}
+        onSelectCategory={setFilterCategory}
+      />
+
+      {/* 5. CATEGORY BREAKDOWN + TRANSACTION LEDGER (12-COL SPLIT) */}
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
         {/* Left 4 Cols: Visual Category Breakdown */}
         <div className="rounded-3xl border border-indigo-100 bg-white p-6 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E] lg:col-span-4">
