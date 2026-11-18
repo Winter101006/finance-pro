@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
+    "test:security": "tsx scripts/test-auth-security.ts",
     "test:parser": "tsx scripts/test-parser-and-gemini.ts"
   },
   "dependencies": {

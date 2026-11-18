@@ -5,6 +5,7 @@ import {
   Keyboard,
   Loader2,
   Mic,
+  Sparkles,
   Trash2,
   Undo2,
   Volume2,
@@ -33,20 +34,19 @@ interface SeniorModeViewProps {
   onSpeakVietnamese: (text: string) => void;
 }
 
-const SENIOR_QUICK_PHRASES = [
-  'Đi chợ mua rau 35 nghìn',
-  'Mua thịt bò 1 trăm rưỡi',
-  'Sáng mua rau 35 nghìn với mua thịt bò 1 trăm rưỡi',
+const SIMPLE_QUICK_PHRASES = [
+  'Ăn sáng 45 nghìn',
+  'Đổ xăng 70 nghìn',
+  'Mua đồ ăn 150 nghìn',
   'Đóng tiền điện nước 850 nghìn',
-  'Mua thuốc bổ 3 lít',
 ];
 
 const QUICK_DENOMINATIONS = [
-  { label: '+ 20.000 đ', value: 20000 },
-  { label: '+ 50.000 đ', value: 50000 },
-  { label: '+ 100.000 đ', value: 100000 },
-  { label: '+ 200.000 đ', value: 200000 },
-  { label: '+ 500.000 đ', value: 500000 },
+  { label: '+ 20.000 ₫', value: 20000 },
+  { label: '+ 50.000 ₫', value: 50000 },
+  { label: '+ 100.000 ₫', value: 100000 },
+  { label: '+ 200.000 ₫', value: 200000 },
+  { label: '+ 500.000 ₫', value: 500000 },
 ];
 
 export function SeniorModeView({
@@ -64,8 +64,8 @@ export function SeniorModeView({
   const [isListening, setIsListening] = useState(false);
   const [heardTranscript, setHeardTranscript] = useState('');
   const [showKeyboard, setShowKeyboard] = useState(false);
-  const [manualItem, setManualItem] = useState('Đi chợ mua thức ăn');
-  const [manualAmount, setManualAmount] = useState<number>(100000);
+  const [manualItem, setManualItem] = useState('Ăn uống hàng ngày');
+  const [manualAmount, setManualAmount] = useState<number>(50000);
 
   // Start Web Speech API (vi-VN)
   const handleStartVoiceRecording = () => {
@@ -77,7 +77,7 @@ export function SeniorModeView({
     if (!SpeechRec) {
       setShowKeyboard(true);
       onSpeakVietnamese(
-        'Thiết bị này chưa bật micro, mời bố mẹ bấm nút nhập bằng bàn phím bên dưới.'
+        'Thiết bị này chưa bật micro, bạn có thể nhập nhanh bằng bàn phím bên dưới.'
       );
       return;
     }
@@ -136,55 +136,73 @@ export function SeniorModeView({
     setShowKeyboard(false);
   };
 
-  // Today's 5 most recent transactions & Total spent today
-  const todayStats = useMemo(() => {
+  // Summary metrics
+  const summaryStats = useMemo(() => {
     const now = new Date();
     const todayStr = now.toDateString();
 
-    const todayTxs = transactions.filter(
-      (tx) => new Date(tx.transactionDate).toDateString() === todayStr
-    );
+    let totalIncome = 0;
+    let totalExpense = 0;
+    let totalSpentToday = 0;
 
-    const displayTxs = (todayTxs.length > 0 ? todayTxs : transactions).slice(0, 5);
-    const totalSpentToday = displayTxs
-      .filter((tx) => tx.type === 'expense')
-      .reduce((sum, tx) => sum + tx.amount, 0);
+    for (const tx of transactions) {
+      if (tx.type === 'income') {
+        totalIncome += tx.amount;
+      } else {
+        totalExpense += tx.amount;
+        if (new Date(tx.transactionDate).toDateString() === todayStr) {
+          totalSpentToday += tx.amount;
+        }
+      }
+    }
 
     return {
-      recentFive: displayTxs,
+      recentFive: transactions.slice(0, 5),
       totalSpentToday,
+      balance: totalIncome - totalExpense,
     };
   }, [transactions]);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 pb-20 text-slate-950">
-      {/* HIGH-CONTRAST HEADER BANNER (WCAG AAA) */}
-      <div className="rounded-3xl border-4 border-indigo-900 bg-white p-6 shadow-md space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="mx-auto max-w-3xl space-y-6 pb-20">
+      {/* 1. CLEAN SUMMARY HEADER CARD */}
+      <div className="rounded-3xl border border-indigo-200/80 bg-white p-6 shadow-[0_12px_36px_rgb(79,70,229,0.08)] dark:border-indigo-500/25 dark:bg-[#131B2E] space-y-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <span className="inline-block rounded-xl bg-indigo-900 px-3.5 py-1 text-base font-extrabold text-white">
-              CHẾ ĐỘ CHỮ LỚN DÀNH CHO BỐ MẸ
-            </span>
-            <h1 className="mt-2 text-2xl font-black text-slate-950 sm:text-3xl">
-              Sổ Chi Tiêu: {activeWallet.name}
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-extrabold text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/15 dark:text-indigo-300">
+              <Sparkles className="h-3.5 w-3.5" />
+              <span>Giao diện Đơn giản · Thao tác nhanh</span>
+            </div>
+            <h1 className="mt-2 text-2xl font-black tracking-tight text-slate-900 dark:text-white">
+              {activeWallet.name}
             </h1>
           </div>
-          <div className="rounded-2xl border-2 border-rose-700 bg-rose-50 px-5 py-3 text-left sm:text-right">
-            <div className="text-base font-extrabold text-rose-900">
-              TỔNG CHI HÔM NAY
+
+          <div className="flex flex-wrap gap-3">
+            <div className="rounded-2xl border border-rose-200 bg-rose-50/80 px-4 py-2.5 dark:border-rose-500/25 dark:bg-rose-950/30">
+              <div className="text-xs font-bold text-rose-700 dark:text-rose-300">
+                Chi hôm nay
+              </div>
+              <div className="font-mono text-xl font-black tabular-nums text-rose-700 dark:text-rose-300">
+                {formatVndNumber(summaryStats.totalSpentToday)} ₫
+              </div>
             </div>
-            <div className="font-mono text-2xl font-black tabular-nums text-rose-800 sm:text-3xl">
-              {formatVndNumber(todayStats.totalSpentToday)} đồng
+
+            <div className="rounded-2xl border border-indigo-200 bg-indigo-50/80 px-4 py-2.5 dark:border-indigo-500/25 dark:bg-indigo-950/30">
+              <div className="text-xs font-bold text-indigo-700 dark:text-indigo-300">
+                Số dư hiện tại
+              </div>
+              <div className="font-mono text-xl font-black tabular-nums text-indigo-800 dark:text-indigo-200">
+                {formatVndNumber(summaryStats.balance)} ₫
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Big Wallet Selector if user has multiple wallets */}
+        {/* Wallet Selector if user has multiple personal wallets */}
         {wallets.length > 1 && (
-          <div className="flex flex-wrap items-center gap-2 pt-2 border-t-2 border-slate-200">
-            <span className="text-base font-extrabold text-slate-700 mr-1">
-              Chọn sổ chi tiêu:
-            </span>
+          <div className="flex flex-wrap items-center gap-2 border-t border-indigo-100 pt-3 dark:border-indigo-500/20">
+            <span className="text-xs font-bold text-slate-500 mr-1">Đổi ví:</span>
             {wallets.map((w) => {
               const active = w.id === activeWallet.id;
               return (
@@ -192,13 +210,13 @@ export function SeniorModeView({
                   key={w.id}
                   type="button"
                   onClick={() => onSelectWallet(w.id)}
-                  className={`inline-flex min-h-[48px] items-center gap-2 rounded-2xl border-2 px-4 py-2 text-base font-black transition ${
+                  className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-extrabold transition ${
                     active
-                      ? 'border-indigo-950 bg-indigo-900 text-white'
-                      : 'border-slate-700 bg-slate-100 text-slate-900 hover:bg-indigo-50'
+                      ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white shadow-sm'
+                      : 'border border-indigo-100 bg-slate-50 text-slate-700 hover:bg-indigo-50 dark:border-indigo-500/20 dark:bg-slate-800 dark:text-slate-200'
                   }`}
                 >
-                  <WalletIcon className="h-5 w-5" />
+                  <WalletIcon className="h-3.5 w-3.5" />
                   <span>{w.name}</span>
                 </button>
               );
@@ -207,79 +225,79 @@ export function SeniorModeView({
         )}
       </div>
 
-      {/* GIANT PRIMARY MICROPHONE ACTION CARD */}
-      <div className="rounded-3xl border-4 border-indigo-900 bg-white p-6 sm:p-8 shadow-lg text-center space-y-5">
-        <p className="text-xl font-bold text-slate-900 sm:text-2xl">
-          Bố mẹ chỉ cần bấm nút dưới đây và đọc khoản vừa mua:
+      {/* 2. FAST VOICE & KEYBOARD ENTRY CARD */}
+      <div className="rounded-3xl border border-indigo-200/80 bg-white p-6 sm:p-8 shadow-[0_12px_36px_rgb(79,70,229,0.08)] dark:border-indigo-500/25 dark:bg-[#131B2E] text-center space-y-5">
+        <p className="text-base font-bold text-slate-700 dark:text-slate-200 sm:text-lg">
+          Bấm nút bên dưới để đọc khoản thu/chi hoặc chọn nhập nhanh bằng bàn phím:
         </p>
 
         <button
           type="button"
           onClick={handleStartVoiceRecording}
           disabled={isParsing}
-          className={`flex min-h-[88px] w-full flex-col items-center justify-center gap-3 rounded-3xl border-4 px-6 py-6 text-2xl font-black text-white shadow-xl transition active:scale-[0.99] sm:text-3xl ${
+          className={`flex min-h-[76px] w-full flex-col items-center justify-center gap-2.5 rounded-3xl px-6 py-5 text-xl font-black text-white shadow-lg transition active:scale-[0.99] sm:text-2xl ${
             isListening
-              ? 'border-rose-900 bg-rose-700'
-              : 'border-indigo-950 bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-800 hover:brightness-105'
+              ? 'bg-rose-600 shadow-rose-500/30'
+              : 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 shadow-indigo-500/25 hover:brightness-105'
           }`}
         >
           {isParsing ? (
             <div className="flex items-center gap-3">
-              <Loader2 className="h-9 w-9 animate-spin" />
-              <span>ĐANG GHI VÀO SỔ...</span>
+              <Loader2 className="h-7 w-7 animate-spin" />
+              <span>Đang phân tích &amp; lưu...</span>
             </div>
           ) : isListening ? (
             <div className="space-y-2">
               <div className="flex items-center justify-center gap-3">
-                <Mic className="h-9 w-9 animate-bounce" />
-                <span>ĐANG NGHE BỐ MẸ NÓI...</span>
+                <Mic className="h-7 w-7 animate-bounce" />
+                <span>Đang lắng nghe giọng nói...</span>
               </div>
-              {/* Clear Visual Sound Wave Bars */}
-              <div className="flex items-center justify-center gap-2 pt-1">
-                <span className="h-4 w-2 animate-pulse rounded-full bg-white" />
-                <span className="h-8 w-2 animate-pulse rounded-full bg-amber-300" />
-                <span className="h-6 w-2 animate-pulse rounded-full bg-white" />
-                <span className="h-9 w-2 animate-pulse rounded-full bg-amber-300" />
-                <span className="h-5 w-2 animate-pulse rounded-full bg-white" />
+              <div className="flex items-center justify-center gap-1.5 pt-1">
+                <span className="h-3 w-1.5 animate-pulse rounded-full bg-white" />
+                <span className="h-6 w-1.5 animate-pulse rounded-full bg-amber-300" />
+                <span className="h-4 w-1.5 animate-pulse rounded-full bg-white" />
+                <span className="h-7 w-1.5 animate-pulse rounded-full bg-amber-300" />
+                <span className="h-3 w-1.5 animate-pulse rounded-full bg-white" />
               </div>
             </div>
           ) : (
-            <div className="flex items-center justify-center gap-4">
-              <Mic className="h-10 w-10 shrink-0" />
-              <span>BẤM ĐỂ NÓI CHI TIÊU</span>
+            <div className="flex items-center justify-center gap-3">
+              <Mic className="h-7 w-7 shrink-0" />
+              <span>Bấm để nói khoản thu / chi</span>
             </div>
           )}
         </button>
 
-        {/* If voice transcript was captured, show big confirmation button */}
+        {/* Voice transcript confirmation */}
         {heardTranscript && (
-          <div className="rounded-2xl border-4 border-emerald-800 bg-emerald-50 p-5 text-left space-y-4">
-            <div className="text-xl font-bold text-emerald-950">
-              Câu bố mẹ vừa nói: <span className="underline">“{heardTranscript}”</span>
+          <div className="rounded-2xl border border-emerald-300 bg-emerald-50/90 p-5 text-left space-y-3 dark:border-emerald-500/30 dark:bg-emerald-950/40">
+            <div className="text-base font-bold text-emerald-900 dark:text-emerald-200">
+              Nội dung vừa nhận diện:{' '}
+              <span className="underline">“{heardTranscript}”</span>
             </div>
             <button
               type="button"
               onClick={handleConfirmHeardVoice}
-              className="min-h-[68px] w-full rounded-2xl bg-emerald-700 px-6 text-2xl font-black text-white shadow-md hover:bg-emerald-800"
+              className="min-h-[52px] w-full rounded-2xl bg-emerald-600 px-6 text-base font-extrabold text-white shadow-sm hover:bg-emerald-700"
             >
-              ĐÚNG RỒI, LƯU VÀO SỔ NGAY
+              Xác nhận &amp; Lưu ngay
             </button>
           </div>
         )}
 
         {/* Quick 1-Tap Common Phrases */}
-        <div className="pt-2 text-left">
-          <div className="text-lg font-extrabold text-slate-800 mb-2.5">
-            Hoặc chạm 1 lần vào câu mẫu thường dùng:
+        <div className="pt-1 text-left">
+          <div className="text-xs font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2.5">
+            Hoặc chạm 1 lần để ghi mẫu nhanh:
           </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {SENIOR_QUICK_PHRASES.map((phrase) => (
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+            {SIMPLE_QUICK_PHRASES.map((phrase) => (
               <button
                 key={phrase}
                 type="button"
                 disabled={isParsing}
                 onClick={() => onSubmitNaturalInput(phrase)}
-                className="flex min-h-[64px] items-center justify-between rounded-2xl border-2 border-indigo-900 bg-indigo-50/80 px-4 py-3 text-left text-lg font-extrabold text-indigo-950 transition hover:bg-indigo-100 active:scale-[0.99]"
+                className="flex min-h-[48px] items-center justify-between rounded-2xl border border-indigo-100 bg-indigo-50/60 px-4 py-2.5 text-left text-sm font-bold text-slate-800 transition hover:border-indigo-300 hover:bg-indigo-100/70 dark:border-indigo-500/20 dark:bg-white/[0.04] dark:text-slate-200"
               >
                 <span>“{phrase}”</span>
               </button>
@@ -287,43 +305,43 @@ export function SeniorModeView({
           </div>
         </div>
 
-        {/* Secondary Giant Button: NHẬP BẰNG BÀN PHÍM */}
+        {/* Toggle Fast Keyboard Panel */}
         <button
           type="button"
           onClick={() => setShowKeyboard((v) => !v)}
-          className="flex min-h-[68px] w-full items-center justify-center gap-3 rounded-2xl border-4 border-slate-900 bg-amber-100 px-6 text-xl font-black text-slate-950 transition hover:bg-amber-200 sm:text-2xl"
+          className="flex min-h-[54px] w-full items-center justify-center gap-2.5 rounded-2xl border-2 border-indigo-200 bg-slate-50 px-6 text-base font-extrabold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-500/30 dark:bg-slate-800/80 dark:text-indigo-200"
         >
-          <Keyboard className="h-7 w-7 shrink-0" />
-          <span>{showKeyboard ? 'ĐÓNG BÀN PHÍM NHẬP TAY' : 'NHẬP BẰNG BÀN PHÍM'}</span>
+          <Keyboard className="h-5 w-5 shrink-0" />
+          <span>{showKeyboard ? 'Đóng bàn phím nhập nhanh' : 'Nhập bằng bàn phím & Mệnh giá nhanh'}</span>
         </button>
 
-        {/* Senior-Friendly Keyboard Panel with Quick Denominations */}
+        {/* Fast Keyboard Panel with Quick Denominations */}
         {showKeyboard && (
           <form
             onSubmit={handleManualKeyboardSubmit}
-            className="rounded-3xl border-4 border-slate-900 bg-slate-50 p-5 text-left space-y-5"
+            className="rounded-3xl border border-indigo-200 bg-slate-50/90 p-5 text-left space-y-4 dark:border-indigo-500/30 dark:bg-[#0B0F19]/90"
           >
             <div>
-              <label className="block text-xl font-black text-slate-950 mb-2">
-                1. Bố mẹ mua gì hoặc chi việc gì?
+              <label className="block text-sm font-extrabold text-slate-800 dark:text-slate-200 mb-2">
+                1. Nội dung thu / chi:
               </label>
-              <div className="mb-3 flex flex-wrap gap-2">
+              <div className="mb-2.5 flex flex-wrap gap-1.5">
                 {[
-                  'Đi chợ mua thức ăn',
-                  'Mua rau củ quả',
-                  'Mua thịt cá',
+                  'Ăn uống hàng ngày',
+                  'Đi chợ mua đồ',
+                  'Đổ xăng di chuyển',
                   'Đóng tiền điện nước',
-                  'Mua thuốc bổ',
-                  'Ăn sáng',
+                  'Mua sắm cá nhân',
+                  'Học tập & Sách vở',
                 ].map((preset) => (
                   <button
                     key={preset}
                     type="button"
                     onClick={() => setManualItem(preset)}
-                    className={`min-h-[52px] rounded-xl border-2 px-4 text-lg font-extrabold ${
+                    className={`rounded-xl border px-3 py-1.5 text-xs font-extrabold transition ${
                       manualItem === preset
-                        ? 'border-indigo-950 bg-indigo-800 text-white'
-                        : 'border-slate-800 bg-white text-slate-950'
+                        ? 'border-indigo-600 bg-indigo-600 text-white'
+                        : 'border-indigo-200 bg-white text-slate-700 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-slate-300'
                     }`}
                   >
                     {preset}
@@ -334,21 +352,21 @@ export function SeniorModeView({
                 type="text"
                 value={manualItem}
                 onChange={(e) => setManualItem(e.target.value)}
-                className="min-h-[64px] w-full rounded-2xl border-3 border-slate-900 bg-white px-4 text-xl font-extrabold text-slate-950"
+                className="h-12 w-full rounded-2xl border border-indigo-200 bg-white px-4 text-base font-bold text-slate-900 outline-none focus:border-indigo-500 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-white"
               />
             </div>
 
             <div>
-              <label className="block text-xl font-black text-slate-900 mb-2">
-                2. Số tiền bao nhiêu đồng?
+              <label className="block text-sm font-extrabold text-slate-800 dark:text-slate-200 mb-2">
+                2. Số tiền (VNĐ):
               </label>
-              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 mb-3">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 mb-2.5">
                 {QUICK_DENOMINATIONS.map((den) => (
                   <button
                     key={den.value}
                     type="button"
                     onClick={() => setManualAmount((prev) => prev + den.value)}
-                    className="min-h-[64px] rounded-2xl border-2 border-emerald-900 bg-emerald-100 px-3 font-mono text-lg font-black text-emerald-950 hover:bg-emerald-200"
+                    className="h-11 rounded-xl border border-emerald-200 bg-emerald-50/90 px-3 font-mono text-sm font-extrabold text-emerald-800 hover:bg-emerald-100 dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-300"
                   >
                     {den.label}
                   </button>
@@ -356,9 +374,9 @@ export function SeniorModeView({
                 <button
                   type="button"
                   onClick={() => setManualAmount(0)}
-                  className="min-h-[64px] rounded-2xl border-2 border-rose-900 bg-rose-100 px-3 text-lg font-black text-rose-950 hover:bg-rose-200"
+                  className="h-11 rounded-xl border border-rose-200 bg-rose-50/90 px-3 text-xs font-extrabold text-rose-700 hover:bg-rose-100 dark:border-rose-500/30 dark:bg-rose-950/40 dark:text-rose-300"
                 >
-                  Xóa về 0 đ
+                  Đặt lại 0 ₫
                 </button>
               </div>
 
@@ -367,128 +385,132 @@ export function SeniorModeView({
                 step="5000"
                 value={manualAmount}
                 onChange={(e) => setManualAmount(Number(e.target.value) || 0)}
-                className="min-h-[64px] w-full rounded-2xl border-3 border-slate-900 bg-white px-4 font-mono text-2xl font-black tabular-nums text-slate-950"
+                className="h-12 w-full rounded-2xl border border-indigo-200 bg-white px-4 font-mono text-lg font-black tabular-nums text-slate-900 outline-none focus:border-indigo-500 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-white"
               />
-              <div className="mt-1 text-lg font-bold text-indigo-900">
-                Thành tiền: {formatVndNumber(manualAmount)} đồng
+              <div className="mt-1 text-xs font-bold text-indigo-600 dark:text-indigo-300">
+                Thành tiền: {formatVndNumber(manualAmount)} ₫
               </div>
             </div>
 
             <button
               type="submit"
-              className="min-h-[68px] w-full rounded-2xl bg-emerald-700 px-6 text-2xl font-black text-white shadow-lg hover:bg-emerald-800"
+              className="h-12 w-full rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 px-6 text-base font-extrabold text-white shadow-md hover:brightness-105"
             >
-              LƯU KHOẢN CHI NÀY VÀO SỔ
+              Lưu giao dịch này
             </button>
           </form>
         )}
       </div>
 
-      {/* GIANT CONFIRMATION CARD + VOICE READBACK + GIANT UNDO BUTTON */}
+      {/* 3. CONFIRMATION BANNER + VOICE READBACK + 1-TAP UNDO */}
       {lastAddedBatch && (
-        <div className="space-y-4">
-          <div className="rounded-3xl border-4 border-emerald-800 bg-emerald-50 p-6 shadow-md space-y-4">
-            <div className="flex items-start gap-3">
-              <CheckCircle2 className="mt-1 h-9 w-9 shrink-0 text-emerald-700" />
-              <div>
-                <div className="text-lg font-extrabold uppercase text-emerald-900">
-                  ĐÃ GHI VÀO SỔ THÀNH CÔNG:
-                </div>
-                <p className="mt-1 text-2xl font-black leading-snug text-slate-950 sm:text-3xl">
-                  “{lastAddedBatch.summary}”
-                </p>
+        <div className="rounded-3xl border border-emerald-300 bg-gradient-to-r from-emerald-50/95 to-teal-50/90 p-5 shadow-sm dark:border-emerald-500/30 dark:from-emerald-950/40 dark:to-teal-950/30 space-y-4">
+          <div className="flex items-start gap-3">
+            <CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-emerald-600" />
+            <div>
+              <div className="text-xs font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                Đã ghi nhận thành công
               </div>
+              <p className="mt-1 text-lg font-extrabold text-slate-900 dark:text-white">
+                “{lastAddedBatch.summary}”
+              </p>
             </div>
+          </div>
 
+          <div className="flex flex-wrap gap-2.5">
             <button
               type="button"
               onClick={() => onSpeakVietnamese(lastAddedBatch.summary)}
-              className="flex min-h-[64px] w-full items-center justify-center gap-3 rounded-2xl border-2 border-emerald-900 bg-white px-5 text-xl font-black text-emerald-950 hover:bg-emerald-100"
+              className="inline-flex flex-1 min-w-[160px] h-11 items-center justify-center gap-2 rounded-2xl border border-emerald-300 bg-white px-4 text-xs font-extrabold text-emerald-800 hover:bg-emerald-50 dark:border-emerald-500/30 dark:bg-slate-900 dark:text-emerald-200"
             >
-              <Volume2 className="h-7 w-7 text-emerald-700" />
-              <span>BẤM ĐỂ NGHE ĐỌC LẠI</span>
+              <Volume2 className="h-4 w-4 text-emerald-600" />
+              <span>Nghe đọc lại</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onUndoLastBatch}
+              className="inline-flex flex-1 min-w-[160px] h-11 items-center justify-center gap-2 rounded-2xl bg-rose-600 px-4 text-xs font-extrabold text-white shadow-xs hover:bg-rose-700"
+            >
+              <Undo2 className="h-4 w-4" />
+              <span>Hoàn tác ({lastAddedBatch.ids.length} khoản)</span>
             </button>
           </div>
-
-          {/* GIANT 1-TAP UNDO BUTTON */}
-          <button
-            type="button"
-            onClick={onUndoLastBatch}
-            className="flex min-h-[72px] w-full items-center justify-center gap-3 rounded-3xl border-4 border-rose-950 bg-rose-700 px-6 py-4 text-2xl font-black text-white shadow-xl transition hover:bg-rose-800 active:scale-[0.99]"
-          >
-            <Undo2 className="h-8 w-8 shrink-0" />
-            <span>HOÀN TÁC (XÓA KHOẢN VỪA GHI)</span>
-          </button>
         </div>
       )}
 
-      {/* BOTTOM LIST: ONLY 5 MOST RECENT TRANSACTIONS TODAY */}
-      <div className="rounded-3xl border-4 border-slate-900 bg-white p-6 shadow-md space-y-4">
-        <div className="flex items-center justify-between border-b-2 border-slate-300 pb-3">
-          <h2 className="text-2xl font-black text-slate-950">
-            5 Khoản Vừa Ghi Gần Nhất
+      {/* 4. RECENT 5 TRANSACTIONS */}
+      <div className="rounded-3xl border border-indigo-100 bg-white p-6 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E] space-y-4">
+        <div className="flex items-center justify-between border-b border-indigo-100 pb-3 dark:border-indigo-500/20">
+          <h2 className="text-base font-extrabold text-slate-900 dark:text-white">
+            5 Giao Dịch Gần Nhất
           </h2>
-          <span className="rounded-xl bg-slate-200 px-3 py-1 font-mono text-base font-extrabold text-slate-900">
-            Hôm nay
+          <span className="rounded-full bg-indigo-50 px-3 py-1 font-mono text-xs font-bold text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300">
+            {transactions.length} khoản đã lưu
           </span>
         </div>
 
-        {todayStats.recentFive.length === 0 ? (
-          <div className="py-8 text-center text-xl font-bold text-slate-600">
-            Sổ chi tiêu này hiện đang ở mức 0 đồng (chưa có giao dịch nào).
+        {summaryStats.recentFive.length === 0 ? (
+          <div className="py-10 text-center text-sm font-medium text-slate-500 dark:text-slate-400">
+            Sổ thu chi hiện đang ở mức 0 ₫ (chưa có giao dịch nào).
           </div>
         ) : (
-          <div className="divide-y-2 divide-slate-200">
-            {todayStats.recentFive.map((tx) => {
+          <div className="divide-y divide-indigo-100/60 dark:divide-indigo-500/10">
+            {summaryStats.recentFive.map((tx) => {
               const cat = CATEGORY_BY_SLUG[tx.categorySlug] || CATEGORY_BY_SLUG['khac'];
               return (
                 <div
                   key={tx.id}
-                  className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between"
+                  className="flex flex-col gap-3 py-3.5 sm:flex-row sm:items-center sm:justify-between"
                 >
-                  <div className="flex items-center gap-4">
-                    <CategoryIcon slug={tx.categorySlug} size="xl" />
+                  <div className="flex items-center gap-3.5">
+                    <CategoryIcon slug={tx.categorySlug} size="lg" />
                     <div>
-                      <div className="text-xl font-black text-slate-950 sm:text-2xl">
+                      <div className="text-base font-extrabold text-slate-900 dark:text-white">
                         {tx.description}
                       </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-base font-bold text-slate-700">
-                        <span className="rounded-lg bg-slate-200 px-2.5 py-0.5 text-slate-900">
-                          Mục: {cat.name}
+                      <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                        <span
+                          className="rounded-full px-2 py-0.5 text-[11px] font-bold"
+                          style={{
+                            backgroundColor: `${cat.color}18`,
+                            color: cat.color,
+                          }}
+                        >
+                          {cat.name}
                         </span>
                         <span>
                           ·{' '}
-                          {new Date(tx.transactionDate).toLocaleTimeString('vi-VN', {
+                          {new Date(tx.transactionDate).toLocaleString('vi-VN', {
+                            day: '2-digit',
+                            month: '2-digit',
                             hour: '2-digit',
                             minute: '2-digit',
                           })}
                         </span>
-                        {tx.userDisplayName && (
-                          <span className="rounded-lg bg-indigo-100 px-2 py-0.5 text-sm font-extrabold text-indigo-900">
-                            {tx.userDisplayName}
-                          </span>
-                        )}
                       </div>
                     </div>
                   </div>
 
                   <div className="flex items-center justify-between gap-4 sm:justify-end">
                     <span
-                      className={`font-mono text-2xl font-black tabular-nums ${
-                        tx.type === 'income' ? 'text-emerald-800' : 'text-rose-800'
+                      className={`font-mono text-lg font-black tabular-nums ${
+                        tx.type === 'income'
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-rose-600 dark:text-rose-400'
                       }`}
                     >
                       {tx.type === 'income' ? '+' : '−'}
-                      {formatVndNumber(tx.amount)} đ
+                      {formatVndNumber(tx.amount)} ₫
                     </span>
 
                     <button
                       type="button"
                       onClick={() => onDeleteTransaction(tx.id)}
-                      className="flex min-h-[56px] items-center gap-1.5 rounded-2xl border-2 border-rose-800 bg-rose-50 px-4 text-base font-black text-rose-900 hover:bg-rose-100"
+                      className="inline-flex h-9 items-center gap-1 rounded-xl border border-rose-200 bg-rose-50/70 px-3 text-xs font-bold text-rose-700 hover:bg-rose-100 dark:border-rose-500/30 dark:bg-rose-950/30 dark:text-rose-300"
                       title="Xóa khoản này"
                     >
-                      <Trash2 className="h-5 w-5" />
+                      <Trash2 className="h-3.5 w-3.5" />
                       <span>Xóa</span>
                     </button>
                   </div>

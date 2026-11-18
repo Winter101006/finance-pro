@@ -1,13 +1,13 @@
 'use client';
 
 import {
-  GraduationCap,
-  HeartHandshake,
+  LayoutDashboard,
   Loader2,
   LogOut,
   Moon,
   Sparkles,
   Sun,
+  Zap,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AuthScreen } from '@/components/AuthScreen';
@@ -74,14 +74,17 @@ export default function FinanceProPage() {
     }
   }, []);
 
-  const refreshTransactions = useCallback(async (walletId: string) => {
-    if (!walletId) {
-      setTransactions([]);
-      return;
-    }
-    const list = await FinanceRepository.getTransactions(walletId);
-    setTransactions(list);
-  }, []);
+  const refreshTransactions = useCallback(
+    async (walletId: string, userId?: string) => {
+      if (!walletId) {
+        setTransactions([]);
+        return;
+      }
+      const list = await FinanceRepository.getTransactions(walletId, userId);
+      setTransactions(list);
+    },
+    []
+  );
 
   useEffect(() => {
     refreshSession().finally(() => {
@@ -91,19 +94,19 @@ export default function FinanceProPage() {
 
   useEffect(() => {
     if (hydrated && profile && activeWalletId) {
-      refreshTransactions(activeWalletId);
+      refreshTransactions(activeWalletId, profile.id);
     }
   }, [hydrated, profile, activeWalletId, refreshTransactions]);
 
-  // Manage dark mode class (Senior Mode always uses high-contrast light surface for WCAG AAA)
+  // Manage dark mode class
   useEffect(() => {
     const root = document.documentElement;
-    if (darkMode && uiMode === 'standard' && profile) {
+    if (darkMode && profile) {
       root.classList.add('dark');
     } else {
       root.classList.remove('dark');
     }
-  }, [darkMode, uiMode, profile]);
+  }, [darkMode, profile]);
 
   const activeWallet = useMemo(
     () => wallets.find((w) => w.id === activeWalletId) || wallets[0] || null,
@@ -145,7 +148,7 @@ export default function FinanceProPage() {
       if (!parsed.items || parsed.items.length === 0) {
         if (uiMode === 'senior') {
           speakVietnamese(
-            parsed.spokenSummaryVi || 'Chưa nghe rõ số tiền, xin nói lại.'
+            parsed.spokenSummaryVi || 'Chưa nghe rõ số tiền, vui lòng nói lại.'
           );
         }
         return;
@@ -158,7 +161,7 @@ export default function FinanceProPage() {
         items: parsed.items,
       });
 
-      await refreshTransactions(activeWallet.id);
+      await refreshTransactions(activeWallet.id, profile.id);
 
       const engineLabel =
         parsed.engine === 'gemini-developer-api' ||
@@ -193,7 +196,7 @@ export default function FinanceProPage() {
       user: profile,
       ...params,
     });
-    await refreshTransactions(activeWallet.id);
+    await refreshTransactions(activeWallet.id, profile.id);
     setLastAddedBatch({
       ids: [created.id],
       summary: `Đã lưu ${params.type === 'income' ? 'khoản thu' : 'khoản chi'} "${
@@ -206,8 +209,6 @@ export default function FinanceProPage() {
   const handleCreateWallet = async (params: {
     name: string;
     type: WalletType;
-    monthlyBudget: number;
-    weeklyBudget: number;
   }) => {
     if (!profile) return;
     const created = await FinanceRepository.createWallet({
@@ -218,23 +219,14 @@ export default function FinanceProPage() {
     setActiveWalletId(created.id);
   };
 
-  const handleJoinFamilyWallet = async (inviteCode: string) => {
-    if (!profile) return;
-    const joined = await FinanceRepository.joinFamilyWalletByCode(
-      profile.id,
-      inviteCode
-    );
-    await refreshSession();
-    setActiveWalletId(joined.id);
-  };
-
   const handleUndoLastBatch = async () => {
-    if (!lastAddedBatch || lastAddedBatch.ids.length === 0 || !activeWallet) return;
+    if (!lastAddedBatch || lastAddedBatch.ids.length === 0 || !activeWallet || !profile)
+      return;
     await FinanceRepository.deleteTransactionsByIds(lastAddedBatch.ids);
     setLastAddedBatch(null);
-    await refreshTransactions(activeWallet.id);
+    await refreshTransactions(activeWallet.id, profile.id);
     if (uiMode === 'senior') {
-      speakVietnamese('Đã xóa khoản chi vừa ghi.');
+      speakVietnamese('Đã hoàn tác giao dịch vừa lưu.');
     }
   };
 
@@ -244,28 +236,22 @@ export default function FinanceProPage() {
       Pick<FinanceTransaction, 'amount' | 'description' | 'categorySlug' | 'type'>
     >
   ) => {
-    if (!activeWallet) return;
+    if (!activeWallet || !profile) return;
     await FinanceRepository.updateTransaction(id, updates);
-    await refreshTransactions(activeWallet.id);
+    await refreshTransactions(activeWallet.id, profile.id);
   };
 
   const handleDeleteTransaction = async (id: string) => {
-    if (!activeWallet) return;
+    if (!activeWallet || !profile) return;
     await FinanceRepository.deleteTransactionsByIds([id]);
-    await refreshTransactions(activeWallet.id);
+    await refreshTransactions(activeWallet.id, profile.id);
   };
 
   const handleClearWalletTransactions = async () => {
-    if (!activeWallet) return;
+    if (!activeWallet || !profile) return;
     await FinanceRepository.clearWalletTransactions(activeWallet.id);
     setLastAddedBatch(null);
-    await refreshTransactions(activeWallet.id);
-  };
-
-  const handleUpdateBudget = async (monthly: number, weekly: number) => {
-    if (!activeWallet) return;
-    await FinanceRepository.updateWalletBudget(activeWallet.id, monthly, weekly);
-    await refreshSession();
+    await refreshTransactions(activeWallet.id, profile.id);
   };
 
   if (!hydrated) {
@@ -279,7 +265,7 @@ export default function FinanceProPage() {
     );
   }
 
-  // If no user is logged in, display the mandatory Login & Registration Portal
+  // Mandatory Login & Registration Portal when not authenticated
   if (!profile || !activeWallet) {
     return (
       <AuthScreen
@@ -298,19 +284,9 @@ export default function FinanceProPage() {
   }
 
   return (
-    <div
-      className={`min-h-screen transition-colors ${
-        uiMode === 'senior' ? 'bg-[#FFFDF9] text-slate-950' : 'gemini-mesh-bg'
-      }`}
-    >
-      {/* STICKY TOP HEADER BAR (User Identity + Dual-Mode Switcher + Sign Out) */}
-      <header
-        className={`sticky top-0 z-30 h-16 border-b backdrop-blur-xl ${
-          uiMode === 'senior'
-            ? 'border-b-4 border-indigo-950 bg-white'
-            : 'border-indigo-100/80 bg-white/85 dark:border-indigo-500/15 dark:bg-[#0E1322]/85'
-        }`}
-      >
+    <div className="min-h-screen transition-colors gemini-mesh-bg">
+      {/* STICKY TOP HEADER BAR (User Identity + Clean 2-Mode Switcher + Sign Out) */}
+      <header className="sticky top-0 z-30 h-16 border-b border-indigo-100/80 bg-white/85 backdrop-blur-xl dark:border-indigo-500/15 dark:bg-[#0E1322]/85">
         <div className="mx-auto flex h-full max-w-7xl items-center justify-between gap-2 px-4 sm:px-6">
           {/* Left: Brand Identity & Logged-In User */}
           <div className="flex items-center gap-3">
@@ -327,7 +303,7 @@ export default function FinanceProPage() {
                 </span>
               </div>
               <div className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-                Xin chào, <span className="font-extrabold">{profile.displayName}</span> ·{' '}
+                Tài khoản: <span className="font-extrabold">{profile.displayName}</span> ·{' '}
                 <span className="text-indigo-600 dark:text-indigo-300">
                   {activeWallet.name}
                 </span>
@@ -335,48 +311,45 @@ export default function FinanceProPage() {
             </div>
           </div>
 
-          {/* Center: 1-Click UI Mode Switcher (Standard vs Senior Mode) */}
-          <div className="inline-flex items-center rounded-2xl border-2 border-indigo-200 bg-slate-100/90 p-1 dark:border-indigo-500/30 dark:bg-[#131B2E]">
+          {/* Center: 1-Click UI Mode Switcher (Giao diện Chi tiết vs Giao diện Đơn giản) */}
+          <div className="inline-flex items-center rounded-2xl border border-indigo-200 bg-slate-100/90 p-1 dark:border-indigo-500/30 dark:bg-[#131B2E]">
             <button
               type="button"
               onClick={() => handleSwitchUiMode('standard')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-extrabold transition ${
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-extrabold transition ${
                 uiMode === 'standard'
                   ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white shadow-sm'
                   : 'text-slate-700 hover:text-indigo-600 dark:text-slate-300'
               }`}
             >
-              <GraduationCap className="h-4 w-4" />
-              <span className="hidden sm:inline">Giao diện</span>
-              <span>Tiêu chuẩn</span>
+              <LayoutDashboard className="h-3.5 w-3.5" />
+              <span>Giao diện Chi tiết</span>
             </button>
 
             <button
               type="button"
               onClick={() => handleSwitchUiMode('senior')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-extrabold transition ${
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-extrabold transition ${
                 uiMode === 'senior'
-                  ? 'bg-indigo-900 text-white shadow-sm'
+                  ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white shadow-sm'
                   : 'text-slate-700 hover:text-indigo-600 dark:text-slate-300'
               }`}
             >
-              <HeartHandshake className="h-4 w-4" />
-              <span>Chữ Lớn (Bố Mẹ)</span>
+              <Zap className="h-3.5 w-3.5" />
+              <span>Giao diện Đơn giản</span>
             </button>
           </div>
 
           {/* Right: Theme Toggle & Sign Out Button */}
           <div className="flex items-center gap-2">
-            {uiMode === 'standard' && (
-              <button
-                type="button"
-                onClick={() => setDarkMode((d) => !d)}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-indigo-100 bg-white text-slate-600 shadow-2xs transition hover:border-indigo-300 dark:border-indigo-500/20 dark:bg-[#131B2E] dark:text-amber-300"
-                title="Đổi giao diện Sáng / Tối"
-              >
-                {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setDarkMode((d) => !d)}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-indigo-100 bg-white text-slate-600 shadow-2xs transition hover:border-indigo-300 dark:border-indigo-500/20 dark:bg-[#131B2E] dark:text-amber-300"
+              title="Đổi giao diện Sáng / Tối"
+            >
+              {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </button>
 
             <button
               type="button"
@@ -391,7 +364,7 @@ export default function FinanceProPage() {
         </div>
       </header>
 
-      {/* MAIN DUAL-MODE WORKSPACE */}
+      {/* MAIN DUAL-MODE PERSONAL FINANCE WORKSPACE */}
       <main className="mx-auto max-w-7xl px-4 pt-6 sm:px-6">
         {uiMode === 'standard' ? (
           <StandardModeView
@@ -402,14 +375,12 @@ export default function FinanceProPage() {
             onSubmitNaturalInput={handleSubmitNaturalInput}
             onAddManualTransaction={handleAddManualTransaction}
             onCreateWallet={handleCreateWallet}
-            onJoinFamilyWallet={handleJoinFamilyWallet}
             isParsing={isParsing}
             lastAddedBatch={lastAddedBatch}
             onUndoLastBatch={handleUndoLastBatch}
             onUpdateTransaction={handleUpdateTransaction}
             onDeleteTransaction={handleDeleteTransaction}
             onClearWalletTransactions={handleClearWalletTransactions}
-            onUpdateBudget={handleUpdateBudget}
           />
         ) : (
           <SeniorModeView

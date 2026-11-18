@@ -9,6 +9,15 @@ import type {
   Wallet,
   WalletType,
 } from '../types/finance';
+import {
+  createSignedSessionToken,
+  hashPasswordSecure,
+  normalizeEmailInput,
+  normalizePasswordInput,
+  sanitizeUserText,
+  verifyPasswordSecure,
+  verifySignedSessionToken,
+} from './authSecurity';
 import { getSupabaseBrowserClient, isSupabaseConfigured } from './supabase/client';
 
 // Legacy v1 keys to purge so no old fake/demo numbers ever remain
@@ -24,7 +33,7 @@ const SESSION_KEY_V2 = 'finance_pro_session_v2';
 const WALLETS_KEY_V2 = 'finance_pro_wallets_v2';
 const TXS_KEY_V2 = 'finance_pro_txs_v2';
 
-interface StoredAccountV2 {
+export interface StoredAccountV2 {
   profile: UserProfile;
   passwordHash: string;
 }
@@ -42,23 +51,6 @@ function purgeLegacyDemoStorage(): void {
   }
 }
 
-function simpleHash(password: string): string {
-  let hash = 5381;
-  for (let i = 0; i < password.length; i++) {
-    hash = (hash * 33) ^ password.charCodeAt(i);
-  }
-  return (hash >>> 0).toString(16);
-}
-
-function generateInviteCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = 'FP-';
-  for (let i = 0; i < 4; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return code;
-}
-
 function getAvatarInitials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return 'U';
@@ -66,7 +58,7 @@ function getAvatarInitials(name: string): string {
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 }
 
-function loadUsersV2(): StoredAccountV2[] {
+export function loadUsersV2(): StoredAccountV2[] {
   if (typeof window === 'undefined') return [];
   purgeLegacyDemoStorage();
   try {
@@ -82,6 +74,22 @@ function loadUsersV2(): StoredAccountV2[] {
 function saveUsersV2(users: StoredAccountV2[]): void {
   if (typeof window === 'undefined') return;
   localStorage.setItem(USERS_KEY_V2, JSON.stringify(users));
+}
+
+function upsertLocalUserAccount(profile: UserProfile, passwordHash: string): void {
+  const users = loadUsersV2();
+  const cleanEmail = normalizeEmailInput(profile.email);
+  const idx = users.findIndex(
+    (u) =>
+      u.profile.id === profile.id ||
+      normalizeEmailInput(u.profile.email) === cleanEmail
+  );
+  if (idx >= 0) {
+    users[idx] = { profile, passwordHash: passwordHash || users[idx].passwordHash };
+    saveUsersV2(users);
+  } else {
+    saveUsersV2([...users, { profile, passwordHash }]);
+  }
 }
 
 function loadWalletsV2(): Wallet[] {
@@ -120,51 +128,33 @@ function saveTransactionsV2(txs: FinanceTransaction[]): void {
   localStorage.setItem(TXS_KEY_V2, JSON.stringify(txs));
 }
 
-function getWalletsForUserV2(userId: string): Wallet[] {
+function getPersonalWalletsForUserV2(userId: string): Wallet[] {
   const all = loadWalletsV2();
-  return all.filter(
-    (w) => w.ownerId === userId || (Array.isArray(w.memberIds) && w.memberIds.includes(userId))
-  );
+  // Filter to personal/savings wallets owned by this user
+  return all.filter((w) => w.ownerId === userId && w.type !== 'family');
 }
 
-function ensureUserWalletsV2(
-  userId: string,
-  displayName: string,
-  monthlyBudget = 6000000
-): Wallet[] {
-  const existing = getWalletsForUserV2(userId);
+function ensureUserPersonalWalletV2(userId: string, displayName: string): Wallet[] {
+  const existing = getPersonalWalletsForUserV2(userId);
   if (existing.length > 0) return existing;
 
   const now = new Date().toISOString();
-  const weeklyBudget = Math.round(monthlyBudget / 4);
-
   const personalWallet: Wallet = {
     id: `w-personal-${userId}`,
-    name: `Ví Cá Nhân (${displayName})`,
+    name: `Ví Cá Nhân`,
     type: 'personal',
     ownerId: userId,
     memberIds: [userId],
-    monthlyBudget,
-    weeklyBudget,
+    monthlyBudget: 0,
+    weeklyBudget: 0,
     createdAt: now,
   };
 
-  const familyWallet: Wallet = {
-    id: `w-family-${userId}`,
-    name: 'Ví Chung Gia Đình',
-    type: 'family',
-    ownerId: userId,
-    inviteCode: generateInviteCode(),
-    memberIds: [userId],
-    monthlyBudget: monthlyBudget * 2,
-    weeklyBudget: weeklyBudget * 2,
-    createdAt: now,
-  };
-
-  const all = loadWalletsV2();
-  const updated = [...all, personalWallet, familyWallet];
-  saveWalletsV2(updated);
-  return [personalWallet, familyWallet];
+  const all = loadWalletsV2().filter(
+    (w) => !(w.ownerId === userId && w.type === 'family')
+  );
+  saveWalletsV2([...all, personalWallet]);
+  return [personalWallet];
 }
 
 export const FinanceRepository = {
@@ -173,8 +163,19 @@ export const FinanceRepository = {
   },
 
   /**
+   * List saved user profiles on this browser (without exposing password hashes)
+   */
+  getSavedAccountsPreview(): Array<Pick<UserProfile, 'id' | 'email' | 'displayName' | 'avatarText'>> {
+    return loadUsersV2().map((u) => ({
+      id: u.profile.id,
+      email: u.profile.email,
+      displayName: u.profile.displayName,
+      avatarText: u.profile.avatarText,
+    }));
+  },
+
+  /**
    * Returns current authenticated session or null if not logged in.
-   * Never returns pre-filled fake demo data.
    */
   async getCurrentSession(): Promise<{
     profile: UserProfile | null;
@@ -183,16 +184,25 @@ export const FinanceRepository = {
   }> {
     purgeLegacyDemoStorage();
 
-    // 1. Check local multi-user session first for instant hydration
+    // 1. Verify signed local session token
     let localProfile: UserProfile | null = null;
     if (typeof window !== 'undefined') {
-      const sessionUserId = localStorage.getItem(SESSION_KEY_V2);
-      if (sessionUserId) {
+      const rawSession = localStorage.getItem(SESSION_KEY_V2);
+      const verified = await verifySignedSessionToken(rawSession);
+      if (verified) {
         const users = loadUsersV2();
-        const found = users.find((u) => u.profile.id === sessionUserId);
+        const found = users.find(
+          (u) =>
+            u.profile.id === verified.userId ||
+            (verified.email &&
+              normalizeEmailInput(u.profile.email) === normalizeEmailInput(verified.email))
+        );
         if (found) {
           localProfile = found.profile;
         }
+      } else if (rawSession) {
+        // Tampered or expired session token -> remove it
+        localStorage.removeItem(SESSION_KEY_V2);
       }
     }
 
@@ -214,14 +224,18 @@ export const FinanceRepository = {
           const { data: walletRows, error: walletErr } = await supabase
             .from('wallets')
             .select('*')
+            .eq('owner_id', user.id)
+            .neq('type', 'family')
             .order('created_at', { ascending: true });
 
-          const displayName =
+          const displayName = sanitizeUserText(
             profileRow?.display_name ||
-            user.user_metadata?.display_name ||
-            localProfile?.displayName ||
-            user.email?.split('@')[0] ||
-            'Người dùng';
+              user.user_metadata?.display_name ||
+              localProfile?.displayName ||
+              user.email?.split('@')[0] ||
+              'Người dùng',
+            80
+          );
 
           const uiMode: UIMode =
             profileRow?.ui_mode === 'senior' ||
@@ -234,38 +248,32 @@ export const FinanceRepository = {
           if (!walletErr && walletRows && walletRows.length > 0) {
             wallets = walletRows.map((w) => ({
               id: w.id,
-              name: w.name,
-              type: w.type as WalletType,
+              name: w.name.replace(/\s*\([^)]*\)\s*$/, '') || 'Ví Cá Nhân',
+              type: (w.type as WalletType) || 'personal',
               ownerId: w.owner_id,
-              inviteCode: `FP-${String(w.id).slice(0, 4).toUpperCase()}`,
               memberIds: [w.owner_id],
-              monthlyBudget: Number(w.monthly_budget) || 6000000,
-              weeklyBudget: Number(w.weekly_budget) || 1500000,
+              monthlyBudget: Number(w.monthly_budget) || 0,
+              weeklyBudget: Number(w.weekly_budget) || 0,
               createdAt: w.created_at,
             }));
           } else {
-            // Fallback to local wallets if schema.sql hasn't been executed on Supabase yet
-            wallets = ensureUserWalletsV2(user.id, displayName);
+            wallets = ensureUserPersonalWalletV2(user.id, displayName);
           }
 
           const profile: UserProfile = {
             id: user.id,
-            email: user.email || localProfile?.email || '',
+            email: normalizeEmailInput(user.email || localProfile?.email || ''),
             displayName,
-            roleLabel:
-              uiMode === 'senior' ? 'Giao diện Chữ Lớn (Bố / Mẹ)' : 'Giao diện Tiêu Chuẩn',
+            roleLabel: uiMode === 'senior' ? 'Giao diện Đơn giản' : 'Giao diện Chi tiết',
             avatarText: getAvatarInitials(displayName),
             uiMode,
-            defaultWalletId:
-              profileRow?.default_wallet_id ||
-              localProfile?.defaultWalletId ||
-              wallets[0]?.id ||
-              '',
+            defaultWalletId: wallets[0]?.id || '',
             createdAt: profileRow?.created_at || new Date().toISOString(),
           };
 
           if (typeof window !== 'undefined') {
-            localStorage.setItem(SESSION_KEY_V2, profile.id);
+            const token = await createSignedSessionToken(profile.id, profile.email);
+            localStorage.setItem(SESSION_KEY_V2, token);
           }
 
           return {
@@ -280,7 +288,10 @@ export const FinanceRepository = {
     }
 
     if (localProfile) {
-      const wallets = ensureUserWalletsV2(localProfile.id, localProfile.displayName);
+      const wallets = ensureUserPersonalWalletV2(
+        localProfile.id,
+        localProfile.displayName
+      );
       return {
         profile: localProfile,
         wallets,
@@ -292,165 +303,293 @@ export const FinanceRepository = {
   },
 
   /**
-   * Register a brand-new user account with 0 transactions.
+   * Register a personal finance account with PBKDF2-SHA256 password security and 0 fake data.
    */
   async signUpUser(params: {
     displayName: string;
     email: string;
     password: string;
-    uiMode: UIMode;
-    monthlyBudget?: number;
-    familyInviteCode?: string;
+    uiMode?: UIMode;
   }): Promise<{ profile: UserProfile; wallets: Wallet[]; isCloud: boolean }> {
-    const cleanEmail = params.email.trim().toLowerCase();
-    const cleanName = params.displayName.trim() || cleanEmail.split('@')[0];
-    const budget =
-      params.monthlyBudget && params.monthlyBudget >= 100000
-        ? Math.round(params.monthlyBudget)
-        : 6000000;
+    const cleanEmail = normalizeEmailInput(params.email);
+    const cleanPassword = normalizePasswordInput(params.password);
+    const cleanName =
+      sanitizeUserText(params.displayName, 80) || cleanEmail.split('@')[0];
+    const uiMode: UIMode = params.uiMode === 'senior' ? 'senior' : 'standard';
 
-    if (!cleanEmail || !params.password || params.password.length < 6) {
-      throw new Error('Vui lòng nhập email hợp lệ và mật khẩu tối thiểu 6 ký tự.');
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      throw new Error('Vui lòng nhập địa chỉ email hợp lệ.');
+    }
+    if (!cleanPassword || cleanPassword.length < 6) {
+      throw new Error('Mật khẩu cần có tối thiểu 6 ký tự để đảm bảo an toàn.');
     }
 
     const existingUsers = loadUsersV2();
-    if (existingUsers.some((u) => u.profile.email.toLowerCase() === cleanEmail)) {
-      throw new Error('Email này đã được đăng ký. Vui lòng chuyển sang mục Đăng nhập.');
+    const existingLocal = existingUsers.find(
+      (u) => normalizeEmailInput(u.profile.email) === cleanEmail
+    );
+
+    // If email already exists locally AND the user entered the right password, sign them right in!
+    if (existingLocal) {
+      const check = await verifyPasswordSecure(
+        cleanPassword,
+        existingLocal.passwordHash
+      );
+      if (check.valid) {
+        return this.signInUser({ email: cleanEmail, password: cleanPassword });
+      }
+      throw new Error(
+        'Email này đã được đăng ký trước đó. Vui lòng chuyển sang tab "Đăng nhập" hoặc bấm "Đặt lại mật khẩu".'
+      );
     }
 
+    const passwordHash = await hashPasswordSecure(cleanPassword);
     let userId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     let isCloudConnected = false;
+    let cloudWallets: Wallet[] = [];
 
     const supabase = getSupabaseBrowserClient();
     if (supabase) {
       try {
         const { data, error } = await supabase.auth.signUp({
           email: cleanEmail,
-          password: params.password,
+          password: cleanPassword,
           options: {
             data: {
               display_name: cleanName,
-              ui_mode: params.uiMode,
+              ui_mode: uiMode,
             },
           },
         });
+
         if (!error && data.user) {
           userId = data.user.id;
           isCloudConnected = Boolean(data.session);
+
+          const { data: walletRows } = await supabase
+            .from('wallets')
+            .select('*')
+            .eq('owner_id', userId)
+            .neq('type', 'family')
+            .order('created_at', { ascending: true });
+
+          if (walletRows && walletRows.length > 0) {
+            cloudWallets = walletRows.map((w) => ({
+              id: w.id,
+              name: w.name.replace(/\s*\([^)]*\)\s*$/, '') || 'Ví Cá Nhân',
+              type: (w.type as WalletType) || 'personal',
+              ownerId: w.owner_id,
+              memberIds: [w.owner_id],
+              monthlyBudget: 0,
+              weeklyBudget: 0,
+              createdAt: w.created_at,
+            }));
+          }
+        } else if (
+          error &&
+          error.message.toLowerCase().includes('already registered')
+        ) {
+          // Account already exists in Supabase -> try signing in with the provided password
+          const signInAttempt = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password: cleanPassword,
+          });
+          if (!signInAttempt.error && signInAttempt.data.user) {
+            userId = signInAttempt.data.user.id;
+            isCloudConnected = true;
+          }
         }
       } catch {
-        // Proceed with local multi-user account creation so registration never fails
+        // Proceed with local multi-user account creation so registration never blocks
       }
     }
 
-    const wallets = ensureUserWalletsV2(userId, cleanName, budget);
-
-    // If user entered a family invite code during sign up, join that family wallet
-    if (params.familyInviteCode && params.familyInviteCode.trim()) {
-      const code = params.familyInviteCode.trim().toUpperCase();
-      const allWallets = loadWalletsV2();
-      const targetFamily = allWallets.find(
-        (w) => w.inviteCode && w.inviteCode.toUpperCase() === code
-      );
-      if (targetFamily) {
-        const members = new Set(targetFamily.memberIds || [targetFamily.ownerId]);
-        members.add(userId);
-        targetFamily.memberIds = Array.from(members);
-        saveWalletsV2(allWallets);
-      }
-    }
-
-    const updatedWallets = getWalletsForUserV2(userId);
-    const defaultWallet =
-      params.uiMode === 'senior'
-        ? updatedWallets.find((w) => w.type === 'family') || updatedWallets[0]
-        : updatedWallets[0];
+    const wallets =
+      cloudWallets.length > 0
+        ? cloudWallets
+        : ensureUserPersonalWalletV2(userId, cleanName);
 
     const newProfile: UserProfile = {
       id: userId,
       email: cleanEmail,
       displayName: cleanName,
-      roleLabel:
-        params.uiMode === 'senior'
-          ? 'Giao diện Chữ Lớn (Bố / Mẹ)'
-          : 'Giao diện Tiêu Chuẩn',
+      roleLabel: uiMode === 'senior' ? 'Giao diện Đơn giản' : 'Giao diện Chi tiết',
       avatarText: getAvatarInitials(cleanName),
-      uiMode: params.uiMode,
-      defaultWalletId: defaultWallet.id,
+      uiMode,
+      defaultWalletId: wallets[0].id,
       createdAt: new Date().toISOString(),
     };
 
-    saveUsersV2([
-      ...existingUsers,
-      {
-        profile: newProfile,
-        passwordHash: simpleHash(params.password),
-      },
-    ]);
+    upsertLocalUserAccount(newProfile, passwordHash);
 
     if (typeof window !== 'undefined') {
-      localStorage.setItem(SESSION_KEY_V2, newProfile.id);
+      const token = await createSignedSessionToken(newProfile.id, newProfile.email);
+      localStorage.setItem(SESSION_KEY_V2, token);
     }
 
     return {
       profile: newProfile,
-      wallets: updatedWallets,
+      wallets,
       isCloud: isCloudConnected,
     };
   },
 
   /**
-   * Sign in an existing user account.
+   * Sign in an existing user account with resilient Cloud + Local PBKDF2 verification.
    */
   async signInUser(params: {
     email: string;
     password: string;
   }): Promise<{ profile: UserProfile; wallets: Wallet[]; isCloud: boolean }> {
-    const cleanEmail = params.email.trim().toLowerCase();
-    const users = loadUsersV2();
-    const localMatch = users.find((u) => u.profile.email.toLowerCase() === cleanEmail);
+    const cleanEmail = normalizeEmailInput(params.email);
+    const cleanPassword = normalizePasswordInput(params.password);
 
+    if (!cleanEmail || !cleanPassword) {
+      throw new Error('Vui lòng nhập đầy đủ Email và Mật khẩu.');
+    }
+
+    const users = loadUsersV2();
+    const localMatch = users.find(
+      (u) => normalizeEmailInput(u.profile.email) === cleanEmail
+    );
+
+    // 1. Try Supabase Auth first if configured
     const supabase = getSupabaseBrowserClient();
     if (supabase) {
       try {
-        const { data, error } = await supabase.auth.signInWithPassword({
+        let authRes = await supabase.auth.signInWithPassword({
           email: cleanEmail,
-          password: params.password,
+          password: cleanPassword,
         });
 
-        if (!error && data.user) {
+        // If exact password had accidental leading/trailing space, retry with trimmed password
+        if (
+          authRes.error &&
+          cleanPassword.trim() !== cleanPassword &&
+          cleanPassword.trim().length >= 6
+        ) {
+          authRes = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password: cleanPassword.trim(),
+          });
+        }
+
+        if (!authRes.error && authRes.data.user) {
+          const sbUser = authRes.data.user;
+
+          // Fetch profile & personal wallets directly without a second getUser() call
+          const { data: profileRow } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', sbUser.id)
+            .single();
+
+          const { data: walletRows, error: walletErr } = await supabase
+            .from('wallets')
+            .select('*')
+            .eq('owner_id', sbUser.id)
+            .neq('type', 'family')
+            .order('created_at', { ascending: true });
+
+          const displayName = sanitizeUserText(
+            profileRow?.display_name ||
+              sbUser.user_metadata?.display_name ||
+              localMatch?.profile.displayName ||
+              cleanEmail.split('@')[0],
+            80
+          );
+
+          const uiMode: UIMode =
+            profileRow?.ui_mode === 'senior' ||
+            sbUser.user_metadata?.ui_mode === 'senior' ||
+            localMatch?.profile.uiMode === 'senior'
+              ? 'senior'
+              : 'standard';
+
+          let wallets: Wallet[] = [];
+          if (!walletErr && walletRows && walletRows.length > 0) {
+            wallets = walletRows.map((w) => ({
+              id: w.id,
+              name: w.name.replace(/\s*\([^)]*\)\s*$/, '') || 'Ví Cá Nhân',
+              type: (w.type as WalletType) || 'personal',
+              ownerId: w.owner_id,
+              memberIds: [w.owner_id],
+              monthlyBudget: 0,
+              weeklyBudget: 0,
+              createdAt: w.created_at,
+            }));
+          } else {
+            wallets = ensureUserPersonalWalletV2(sbUser.id, displayName);
+          }
+
+          const profile: UserProfile = {
+            id: sbUser.id,
+            email: cleanEmail,
+            displayName,
+            roleLabel:
+              uiMode === 'senior' ? 'Giao diện Đơn giản' : 'Giao diện Chi tiết',
+            avatarText: getAvatarInitials(displayName),
+            uiMode,
+            defaultWalletId: wallets[0]?.id || '',
+            createdAt:
+              profileRow?.created_at ||
+              localMatch?.profile.createdAt ||
+              new Date().toISOString(),
+          };
+
+          // Sync PBKDF2 hash locally so offline/fast login always stays in sync
+          const freshHash = await hashPasswordSecure(cleanPassword);
+          upsertLocalUserAccount(profile, freshHash);
+
           if (typeof window !== 'undefined') {
-            localStorage.setItem(SESSION_KEY_V2, data.user.id);
+            const token = await createSignedSessionToken(profile.id, profile.email);
+            localStorage.setItem(SESSION_KEY_V2, token);
           }
-          const session = await this.getCurrentSession();
-          if (session.profile) {
-            return {
-              profile: session.profile,
-              wallets: session.wallets,
-              isCloud: session.isCloud,
-            };
-          }
+
+          return {
+            profile,
+            wallets,
+            isCloud: !walletErr && Boolean(walletRows && walletRows.length > 0),
+          };
         }
       } catch {
-        // Fallback to local multi-user registry check below
+        // Fallback to local PBKDF2 check below
       }
     }
 
+    // 2. Verify against Local Multi-User Account Registry (PBKDF2-SHA256)
     if (!localMatch) {
       throw new Error(
-        'Không tìm thấy tài khoản với email này. Bạn hãy bấm sang tab "Đăng ký tài khoản mới" để tạo tài khoản.'
+        'Tài khoản với email này chưa được đăng ký trên hệ thống. Bạn hãy bấm sang mục "Đăng ký" (chỉ mất 5 giây) để khởi tạo tài khoản.'
       );
     }
 
-    if (localMatch.passwordHash !== simpleHash(params.password)) {
-      throw new Error('Mật khẩu không chính xác. Vui lòng kiểm tra lại.');
+    const verification = await verifyPasswordSecure(
+      cleanPassword,
+      localMatch.passwordHash
+    );
+
+    if (!verification.valid) {
+      throw new Error(
+        'Mật khẩu chưa chính xác. Bạn có thể bấm biểu tượng 👁️ để kiểm tra ký tự hoặc chọn "Đặt lại mật khẩu" bên dưới.'
+      );
+    }
+
+    // Automatically upgrade legacy hash to PBKDF2-SHA256 if needed
+    if (verification.needsRehash) {
+      const upgradedHash = await hashPasswordSecure(cleanPassword);
+      upsertLocalUserAccount(localMatch.profile, upgradedHash);
     }
 
     if (typeof window !== 'undefined') {
-      localStorage.setItem(SESSION_KEY_V2, localMatch.profile.id);
+      const token = await createSignedSessionToken(
+        localMatch.profile.id,
+        localMatch.profile.email
+      );
+      localStorage.setItem(SESSION_KEY_V2, token);
     }
 
-    const wallets = ensureUserWalletsV2(
+    const wallets = ensureUserPersonalWalletV2(
       localMatch.profile.id,
       localMatch.profile.displayName
     );
@@ -460,6 +599,59 @@ export const FinanceRepository = {
       wallets,
       isCloud: false,
     };
+  },
+
+  /**
+   * Self-service Password Reset so a user is never locked out of their personal account
+   */
+  async resetUserPassword(params: {
+    email: string;
+    newPassword: string;
+  }): Promise<{ profile: UserProfile; wallets: Wallet[]; isCloud: boolean }> {
+    const cleanEmail = normalizeEmailInput(params.email);
+    const cleanPassword = normalizePasswordInput(params.newPassword);
+
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      throw new Error('Vui lòng nhập đúng địa chỉ Email cần đặt lại mật khẩu.');
+    }
+    if (!cleanPassword || cleanPassword.length < 6) {
+      throw new Error('Mật khẩu mới cần có tối thiểu 6 ký tự.');
+    }
+
+    const users = loadUsersV2();
+    const localMatch = users.find(
+      (u) => normalizeEmailInput(u.profile.email) === cleanEmail
+    );
+
+    const newHash = await hashPasswordSecure(cleanPassword);
+
+    if (localMatch) {
+      upsertLocalUserAccount(localMatch.profile, newHash);
+      if (typeof window !== 'undefined') {
+        const token = await createSignedSessionToken(
+          localMatch.profile.id,
+          localMatch.profile.email
+        );
+        localStorage.setItem(SESSION_KEY_V2, token);
+      }
+      const wallets = ensureUserPersonalWalletV2(
+        localMatch.profile.id,
+        localMatch.profile.displayName
+      );
+      return {
+        profile: localMatch.profile,
+        wallets,
+        isCloud: false,
+      };
+    }
+
+    // If the email wasn't in local storage yet, create/provision the account with the new password
+    return this.signUpUser({
+      displayName: cleanEmail.split('@')[0],
+      email: cleanEmail,
+      password: cleanPassword,
+      uiMode: 'standard',
+    });
   },
 
   /**
@@ -480,7 +672,7 @@ export const FinanceRepository = {
   },
 
   /**
-   * Update user's preferred UI Mode (Standard vs Senior Mode)
+   * Update user's preferred UI Mode (Giao diện Chi tiết vs Giao diện Đơn giản)
    */
   async updateUserUiMode(userId: string, uiMode: UIMode): Promise<UserProfile | null> {
     const users = loadUsersV2();
@@ -490,8 +682,7 @@ export const FinanceRepository = {
         updatedProfile = {
           ...u.profile,
           uiMode,
-          roleLabel:
-            uiMode === 'senior' ? 'Giao diện Chữ Lớn (Bố / Mẹ)' : 'Giao diện Tiêu Chuẩn',
+          roleLabel: uiMode === 'senior' ? 'Giao diện Đơn giản' : 'Giao diện Chi tiết',
         };
         return { ...u, profile: updatedProfile };
       }
@@ -511,18 +702,15 @@ export const FinanceRepository = {
   },
 
   /**
-   * Create a new wallet (Personal, Family Shared, or Savings)
+   * Create an additional personal wallet (e.g. Ví Tiền Mặt, Tài Khoản Ngân Hàng, Quỹ Tiết Kiệm)
    */
   async createWallet(params: {
     userId: string;
     name: string;
     type: WalletType;
-    monthlyBudget: number;
-    weeklyBudget: number;
   }): Promise<Wallet> {
-    const cleanName = params.name.trim() || 'Ví mới';
-    const monthly = Math.max(100000, Math.round(params.monthlyBudget));
-    const weekly = Math.max(50000, Math.round(params.weeklyBudget));
+    const cleanName = sanitizeUserText(params.name, 60) || 'Ví Cá Nhân Mới';
+    const walletType: WalletType = params.type === 'savings' ? 'savings' : 'personal';
 
     const supabase = getSupabaseBrowserClient();
     if (supabase && !params.userId.startsWith('user-')) {
@@ -531,10 +719,10 @@ export const FinanceRepository = {
           .from('wallets')
           .insert({
             name: cleanName,
-            type: params.type === 'savings' ? 'personal' : params.type,
+            type: 'personal',
             owner_id: params.userId,
-            monthly_budget: monthly,
-            weekly_budget: weekly,
+            monthly_budget: 0,
+            weekly_budget: 0,
           })
           .select('*')
           .single();
@@ -548,12 +736,11 @@ export const FinanceRepository = {
           return {
             id: data.id,
             name: data.name,
-            type: params.type,
+            type: walletType,
             ownerId: data.owner_id,
-            inviteCode: `FP-${String(data.id).slice(0, 4).toUpperCase()}`,
             memberIds: [params.userId],
-            monthlyBudget: Number(data.monthly_budget),
-            weeklyBudget: Number(data.weekly_budget),
+            monthlyBudget: 0,
+            weeklyBudget: 0,
             createdAt: data.created_at,
           };
         }
@@ -563,14 +750,13 @@ export const FinanceRepository = {
     }
 
     const newWallet: Wallet = {
-      id: `w-${params.type}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `w-${walletType}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name: cleanName,
-      type: params.type,
+      type: walletType,
       ownerId: params.userId,
-      inviteCode: params.type === 'family' ? generateInviteCode() : undefined,
       memberIds: [params.userId],
-      monthlyBudget: monthly,
-      weeklyBudget: weekly,
+      monthlyBudget: 0,
+      weeklyBudget: 0,
       createdAt: new Date().toISOString(),
     };
 
@@ -579,44 +765,23 @@ export const FinanceRepository = {
     return newWallet;
   },
 
-  /**
-   * Join an existing Family Wallet by Invite Code (Multi-User Family Collaboration)
-   */
-  async joinFamilyWalletByCode(userId: string, inviteCode: string): Promise<Wallet> {
-    const cleanCode = inviteCode.trim().toUpperCase();
-    if (!cleanCode) {
-      throw new Error('Vui lòng nhập mã mời Ví Gia Đình (ví dụ: FP-8492).');
-    }
-
-    const all = loadWalletsV2();
-    const target = all.find(
-      (w) => w.inviteCode && w.inviteCode.toUpperCase() === cleanCode
-    );
-
-    if (!target) {
-      throw new Error(
-        `Không tìm thấy Ví Gia Đình nào có mã "${cleanCode}". Hãy kiểm tra lại mã mời từ tài khoản người thân.`
-      );
-    }
-
-    const members = new Set(target.memberIds || [target.ownerId]);
-    members.add(userId);
-    target.memberIds = Array.from(members);
-    saveWalletsV2(all);
-    return target;
-  },
-
-  async getTransactions(walletId: string): Promise<FinanceTransaction[]> {
+  async getTransactions(walletId: string, userId?: string): Promise<FinanceTransaction[]> {
     if (!walletId) return [];
     const supabase = getSupabaseBrowserClient();
 
     if (supabase && !walletId.startsWith('w-')) {
       try {
-        const { data, error } = await supabase
+        let query = supabase
           .from('transactions')
           .select('*')
           .eq('wallet_id', walletId)
           .order('transaction_date', { ascending: false });
+
+        if (userId && !userId.startsWith('user-')) {
+          query = query.eq('user_id', userId);
+        }
+
+        const { data, error } = await query;
 
         if (!error && data) {
           return data.map((row) => ({
@@ -627,7 +792,7 @@ export const FinanceRepository = {
             categorySlug: (row.category_slug || 'khac') as CategorySlug,
             amount: Number(row.amount),
             type: row.type,
-            description: row.description,
+            description: sanitizeUserText(row.description, 200),
             rawInput: row.raw_input || undefined,
             transactionDate: row.transaction_date,
             createdAt: row.created_at,
@@ -640,7 +805,7 @@ export const FinanceRepository = {
 
     const all = loadTransactionsV2();
     return all
-      .filter((t) => t.walletId === walletId)
+      .filter((t) => t.walletId === walletId && (!userId || t.userId === userId))
       .sort(
         (a, b) =>
           new Date(b.transactionDate).getTime() - new Date(a.transactionDate).getTime()
@@ -665,10 +830,10 @@ export const FinanceRepository = {
             user_id: user.id,
             category_id: cat.id,
             category_slug: cat.slug,
-            amount: Math.round(item.amount),
+            amount: Math.max(0, Math.round(item.amount)),
             type: item.type,
-            description: item.description,
-            raw_input: rawInput,
+            description: sanitizeUserText(item.description, 200),
+            raw_input: sanitizeUserText(rawInput, 300),
             transaction_date: item.transactionDate || new Date().toISOString(),
           };
         });
@@ -709,10 +874,10 @@ export const FinanceRepository = {
         userDisplayName: user.displayName,
         categoryId: cat.id,
         categorySlug: cat.slug,
-        amount: Math.round(item.amount),
+        amount: Math.max(0, Math.round(item.amount)),
         type: item.type,
-        description: item.description,
-        rawInput,
+        description: sanitizeUserText(item.description, 200),
+        rawInput: sanitizeUserText(rawInput, 300),
         transactionDate: item.transactionDate || new Date().toISOString(),
         createdAt: new Date().toISOString(),
       };
@@ -722,9 +887,6 @@ export const FinanceRepository = {
     return created;
   },
 
-  /**
-   * Add a manual structured transaction (Income or Expense with custom Date & Category)
-   */
   async addManualTransaction(params: {
     walletId: string;
     user: UserProfile;
@@ -734,20 +896,21 @@ export const FinanceRepository = {
     description: string;
     transactionDate: string;
   }): Promise<FinanceTransaction> {
+    const cleanDesc = sanitizeUserText(params.description, 200);
     const created = await this.addParsedTransactions({
       walletId: params.walletId,
       user: params.user,
-      rawInput: params.description,
+      rawInput: cleanDesc,
       items: [
         {
-          amount: Math.round(params.amount),
+          amount: Math.max(0, Math.round(params.amount)),
           type: params.type,
           categorySlug: params.categorySlug,
-          description: params.description.trim(),
+          description: cleanDesc,
           transactionDate: params.transactionDate || new Date().toISOString(),
           spokenConfirmationVi: `Đã ghi ${
             params.type === 'income' ? 'khoản thu' : 'khoản chi'
-          } ${params.description.trim()} số tiền ${Math.round(params.amount)} đồng.`,
+          } ${cleanDesc} số tiền ${Math.round(params.amount)} đồng.`,
         },
       ],
     });
@@ -769,10 +932,10 @@ export const FinanceRepository = {
           .from('transactions')
           .update({
             ...(updates.amount !== undefined
-              ? { amount: Math.round(updates.amount) }
+              ? { amount: Math.max(0, Math.round(updates.amount)) }
               : {}),
             ...(updates.description !== undefined
-              ? { description: updates.description }
+              ? { description: sanitizeUserText(updates.description, 200) }
               : {}),
             ...(updates.type !== undefined ? { type: updates.type } : {}),
             ...(cat ? { category_id: cat.id, category_slug: cat.slug } : {}),
@@ -790,6 +953,10 @@ export const FinanceRepository = {
         ? {
             ...t,
             ...updates,
+            description:
+              updates.description !== undefined
+                ? sanitizeUserText(updates.description, 200)
+                : t.description,
             categoryId: cat ? cat.id : t.categoryId,
           }
         : t
@@ -826,28 +993,5 @@ export const FinanceRepository = {
     }
     const all = loadTransactionsV2();
     saveTransactionsV2(all.filter((t) => t.walletId !== walletId));
-  },
-
-  async updateWalletBudget(
-    walletId: string,
-    monthlyBudget: number,
-    weeklyBudget: number
-  ): Promise<void> {
-    const supabase = getSupabaseBrowserClient();
-    if (supabase && !walletId.startsWith('w-')) {
-      try {
-        await supabase
-          .from('wallets')
-          .update({ monthly_budget: monthlyBudget, weekly_budget: weeklyBudget })
-          .eq('id', walletId);
-      } catch {
-        // ignore
-      }
-    }
-
-    const wallets = loadWalletsV2().map((w) =>
-      w.id === walletId ? { ...w, monthlyBudget, weeklyBudget } : w
-    );
-    saveWalletsV2(wallets);
   },
 };

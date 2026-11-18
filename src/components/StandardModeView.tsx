@@ -1,10 +1,9 @@
 'use client';
 
 import {
-  AlertTriangle,
+  Activity,
   Calendar,
   Check,
-  Copy,
   Download,
   Edit3,
   FolderPlus,
@@ -19,7 +18,6 @@ import {
   TrendingDown,
   TrendingUp,
   Undo2,
-  Users,
   Wallet as WalletIcon,
   X,
 } from 'lucide-react';
@@ -51,10 +49,7 @@ interface StandardModeViewProps {
   onCreateWallet: (params: {
     name: string;
     type: WalletType;
-    monthlyBudget: number;
-    weeklyBudget: number;
   }) => Promise<void>;
-  onJoinFamilyWallet: (inviteCode: string) => Promise<void>;
   isParsing: boolean;
   lastAddedBatch: {
     ids: string[];
@@ -70,14 +65,13 @@ interface StandardModeViewProps {
   ) => Promise<void>;
   onDeleteTransaction: (id: string) => Promise<void>;
   onClearWalletTransactions: () => Promise<void>;
-  onUpdateBudget: (monthlyBudget: number, weeklyBudget: number) => Promise<void>;
 }
 
 const SAMPLE_PROMPTS = [
-  'Sáng mua rau 35 nghìn với mua thịt bò 1 trăm rưỡi',
   'Ăn bún chả 45k rồi đổ xăng 70 nghìn',
+  'Sáng mua đồ ăn 35 nghìn với mua cà phê 30k',
   'Đóng tiền điện nước 850 nghìn',
-  'Mua thuốc bổ cho mẹ 3 lít',
+  'Mua sách chuyên ngành 150k',
   'Nhận lương tháng 12 triệu',
 ];
 
@@ -91,14 +85,12 @@ export function StandardModeView({
   onSubmitNaturalInput,
   onAddManualTransaction,
   onCreateWallet,
-  onJoinFamilyWallet,
   isParsing,
   lastAddedBatch,
   onUndoLastBatch,
   onUpdateTransaction,
   onDeleteTransaction,
   onClearWalletTransactions,
-  onUpdateBudget,
 }: StandardModeViewProps) {
   const [omnibarText, setOmnibarText] = useState('');
   const [isListening, setIsListening] = useState(false);
@@ -111,7 +103,7 @@ export function StandardModeView({
   );
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Manual Structured Entry Modal/Panel
+  // Manual Structured Entry Panel
   const [showManualForm, setShowManualForm] = useState(false);
   const [manualType, setManualType] = useState<TransactionType>('expense');
   const [manualAmount, setManualAmount] = useState('');
@@ -122,15 +114,10 @@ export function StandardModeView({
   );
   const [savingManual, setSavingManual] = useState(false);
 
-  // Multi-Wallet & Family Invite Panel
+  // Personal Sub-Wallet Creation Panel
   const [showWalletPanel, setShowWalletPanel] = useState(false);
-  const [walletPanelTab, setWalletPanelTab] = useState<'create' | 'join'>('create');
   const [newWalletName, setNewWalletName] = useState('');
   const [newWalletType, setNewWalletType] = useState<WalletType>('personal');
-  const [newWalletMonthly, setNewWalletMonthly] = useState('6000000');
-  const [joinCodeInput, setJoinCodeInput] = useState('');
-  const [walletActionMsg, setWalletActionMsg] = useState<string | null>(null);
-  const [copiedCode, setCopiedCode] = useState(false);
 
   // Inline edit state
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -138,11 +125,6 @@ export function StandardModeView({
   const [editAmount, setEditAmount] = useState('');
   const [editCategory, setEditCategory] = useState<CategorySlug>('an-uong');
   const [editType, setEditType] = useState<TransactionType>('expense');
-
-  // Budget edit modal
-  const [editingBudget, setEditingBudget] = useState(false);
-  const [monthlyInput, setMonthlyInput] = useState(String(activeWallet.monthlyBudget));
-  const [weeklyInput, setWeeklyInput] = useState(String(activeWallet.weeklyBudget));
 
   const handleOmnibarSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -179,31 +161,12 @@ export function StandardModeView({
   const handleCreateWalletSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newWalletName.trim()) return;
-    setWalletActionMsg(null);
-    const monthly = Number(newWalletMonthly) || 6000000;
     await onCreateWallet({
       name: newWalletName.trim(),
       type: newWalletType,
-      monthlyBudget: monthly,
-      weeklyBudget: Math.round(monthly / 4),
     });
     setNewWalletName('');
     setShowWalletPanel(false);
-  };
-
-  const handleJoinFamilySubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!joinCodeInput.trim()) return;
-    setWalletActionMsg(null);
-    try {
-      await onJoinFamilyWallet(joinCodeInput.trim());
-      setJoinCodeInput('');
-      setShowWalletPanel(false);
-    } catch (err) {
-      setWalletActionMsg(
-        err instanceof Error ? err.message : 'Không thể tham gia ví gia đình.'
-      );
-    }
   };
 
   const toggleVoiceInput = () => {
@@ -259,13 +222,15 @@ export function StandardModeView({
     recognition.start();
   };
 
-  // Financial Metrics Calculation
+  // Personal Financial Metrics Calculation
   const stats = useMemo(() => {
     const now = new Date();
     const sevenDaysAgo = now.getTime() - 7 * 24 * 3600 * 1000;
+    const todayStr = now.toDateString();
     let totalIncome = 0;
     let totalExpense = 0;
     let weeklyExpense = 0;
+    let todayExpense = 0;
     const categoryTotals: Record<string, number> = {};
 
     for (const tx of transactions) {
@@ -273,8 +238,12 @@ export function StandardModeView({
         totalIncome += tx.amount;
       } else {
         totalExpense += tx.amount;
-        if (new Date(tx.transactionDate).getTime() >= sevenDaysAgo) {
+        const txDate = new Date(tx.transactionDate);
+        if (txDate.getTime() >= sevenDaysAgo) {
           weeklyExpense += tx.amount;
+        }
+        if (txDate.toDateString() === todayStr) {
+          todayExpense += tx.amount;
         }
         categoryTotals[tx.categorySlug] =
           (categoryTotals[tx.categorySlug] || 0) + tx.amount;
@@ -282,14 +251,6 @@ export function StandardModeView({
     }
 
     const balance = totalIncome - totalExpense;
-    const monthlyPct =
-      activeWallet.monthlyBudget > 0
-        ? Math.min(100, Math.round((totalExpense / activeWallet.monthlyBudget) * 100))
-        : 0;
-    const weeklyPct =
-      activeWallet.weeklyBudget > 0
-        ? Math.min(100, Math.round((weeklyExpense / activeWallet.weeklyBudget) * 100))
-        : 0;
 
     const categoryBreakdown = Object.entries(categoryTotals)
       .map(([slug, amount]) => ({
@@ -303,12 +264,11 @@ export function StandardModeView({
       totalIncome,
       totalExpense,
       weeklyExpense,
+      todayExpense,
       balance,
-      monthlyPct,
-      weeklyPct,
       categoryBreakdown,
     };
-  }, [transactions, activeWallet.monthlyBudget, activeWallet.weeklyBudget]);
+  }, [transactions]);
 
   const filteredTransactions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -336,8 +296,7 @@ export function StandardModeView({
 
       if (q) {
         const catName = CATEGORY_BY_SLUG[tx.categorySlug]?.name.toLowerCase() || '';
-        const userName = (tx.userDisplayName || '').toLowerCase();
-        const hay = `${tx.description.toLowerCase()} ${catName} ${userName} ${(
+        const hay = `${tx.description.toLowerCase()} ${catName} ${(
           tx.rawInput || ''
         ).toLowerCase()}`;
         if (!hay.includes(q)) return false;
@@ -368,21 +327,11 @@ export function StandardModeView({
 
   const exportCsv = () => {
     const rows = [
-      [
-        'ID',
-        'Thời gian',
-        'Ví',
-        'Người ghi',
-        'Loại',
-        'Danh mục',
-        'Nội dung',
-        'Số tiền (VNĐ)',
-      ],
+      ['ID', 'Thời gian', 'Ví', 'Loại', 'Danh mục', 'Nội dung', 'Số tiền (VNĐ)'],
       ...filteredTransactions.map((t) => [
         t.id,
         new Date(t.transactionDate).toLocaleString('vi-VN'),
         activeWallet.name,
-        t.userDisplayName || 'Chủ ví',
         t.type === 'income' ? 'Thu nhập' : 'Chi tiêu',
         CATEGORY_BY_SLUG[t.categorySlug]?.name || 'Khác',
         t.description,
@@ -397,16 +346,8 @@ export function StandardModeView({
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `finance_pro_${activeWallet.type}.csv`;
+    a.download = `finance_pro_ca_nhan.csv`;
     a.click();
-  };
-
-  const copyInviteCode = (code: string) => {
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(code);
-      setCopiedCode(true);
-      setTimeout(() => setCopiedCode(false), 2000);
-    }
   };
 
   return (
@@ -423,7 +364,7 @@ export function StandardModeView({
               type="text"
               value={omnibarText}
               onChange={(e) => setOmnibarText(e.target.value)}
-              placeholder='Nhập câu nói tự nhiên (VD: "ăn phở 45k, đổ xăng 70 nghìn", "nhận lương 12tr")...'
+              placeholder='Nhập nhanh câu thu/chi (VD: "ăn sáng 45k, đổ xăng 70 nghìn", "nhận lương 12tr")...'
               className="h-12 w-full rounded-2xl border border-indigo-100 bg-slate-50/90 pl-11 pr-10 text-sm font-medium text-slate-900 placeholder-slate-400 outline-none transition focus:border-indigo-500 focus:bg-white dark:border-indigo-500/20 dark:bg-[#0B0F19]/80 dark:text-white dark:placeholder-slate-500"
             />
             {omnibarText && (
@@ -476,7 +417,7 @@ export function StandardModeView({
           </div>
         </form>
 
-        {/* Quick Sample Utterance Chips (fills input so user can edit before sending) */}
+        {/* Quick Sample Utterance Chips */}
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <span className="mr-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-300">
             Mẫu câu gợi ý:
@@ -497,7 +438,7 @@ export function StandardModeView({
         {showManualForm && (
           <form
             onSubmit={handleManualSubmit}
-            className="mt-4 rounded-2xl border border-indigo-200 bg-indigo-50/50 p-4 dark:border-indigo-500/30 dark:bg-[#0B0F19]/90 space-y-4"
+            className="mt-4 space-y-4 rounded-2xl border border-indigo-200 bg-indigo-50/50 p-4 dark:border-indigo-500/30 dark:bg-[#0B0F19]/90"
           >
             <div className="flex items-center justify-between border-b border-indigo-100 pb-2.5 dark:border-indigo-500/20">
               <span className="text-xs font-extrabold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
@@ -515,7 +456,7 @@ export function StandardModeView({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
               {/* Type */}
               <div>
-                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-300">
                   Loại giao dịch
                 </label>
                 <div className="grid grid-cols-2 rounded-xl border border-indigo-200 bg-white p-0.5 dark:border-indigo-500/30 dark:bg-slate-900">
@@ -552,7 +493,7 @@ export function StandardModeView({
 
               {/* Description */}
               <div className="lg:col-span-2">
-                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-300">
                   Nội dung / Mô tả *
                 </label>
                 <input
@@ -567,7 +508,7 @@ export function StandardModeView({
 
               {/* Amount */}
               <div>
-                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-300">
                   Số tiền (VNĐ) *
                 </label>
                 <input
@@ -585,7 +526,7 @@ export function StandardModeView({
               {/* Category & Date */}
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-300">
                     Danh mục
                   </label>
                   <select
@@ -602,7 +543,7 @@ export function StandardModeView({
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-300">
                     Ngày
                   </label>
                   <input
@@ -663,94 +604,49 @@ export function StandardModeView({
         )}
       </div>
 
-      {/* 2. MULTI-WALLET BAR & FAMILY INVITE CODE */}
+      {/* 2. PERSONAL WALLET BAR & UTILITIES */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex flex-wrap items-center gap-1.5 rounded-2xl border border-indigo-100 bg-white p-1.5 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E]">
-            {wallets.map((w) => {
-              const active = w.id === activeWallet.id;
-              const badgeLabel =
-                w.type === 'family'
-                  ? 'Gia đình'
-                  : w.type === 'savings'
-                  ? 'Tiết kiệm'
-                  : 'Cá nhân';
-              return (
-                <button
-                  key={w.id}
-                  type="button"
-                  onClick={() => {
-                    onSelectWallet(w.id);
-                    setMonthlyInput(String(w.monthlyBudget));
-                    setWeeklyInput(String(w.weeklyBudget));
-                  }}
-                  className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-extrabold transition ${
+        <div className="inline-flex flex-wrap items-center gap-1.5 rounded-2xl border border-indigo-100 bg-white p-1.5 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E]">
+          {wallets.map((w) => {
+            const active = w.id === activeWallet.id;
+            const badgeLabel = w.type === 'savings' ? 'Tiết kiệm' : 'Cá nhân';
+            return (
+              <button
+                key={w.id}
+                type="button"
+                onClick={() => onSelectWallet(w.id)}
+                className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-extrabold transition ${
+                  active
+                    ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white shadow-sm'
+                    : 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 dark:text-slate-300 dark:hover:bg-white/[0.05]'
+                }`}
+              >
+                <WalletIcon className="h-3.5 w-3.5" />
+                <span>{w.name}</span>
+                <span
+                  className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] ${
                     active
-                      ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white shadow-sm'
-                      : 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 dark:text-slate-300 dark:hover:bg-white/[0.05]'
+                      ? 'bg-white/20 text-white'
+                      : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300'
                   }`}
                 >
-                  <WalletIcon className="h-3.5 w-3.5" />
-                  <span>{w.name}</span>
-                  <span
-                    className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] ${
-                      active
-                        ? 'bg-white/20 text-white'
-                        : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300'
-                    }`}
-                  >
-                    {badgeLabel}
-                  </span>
-                </button>
-              );
-            })}
+                  {badgeLabel}
+                </span>
+              </button>
+            );
+          })}
 
-            <button
-              type="button"
-              onClick={() => {
-                setWalletActionMsg(null);
-                setShowWalletPanel((v) => !v);
-              }}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/50 px-3 py-2 text-xs font-extrabold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300"
-            >
-              <FolderPlus className="h-3.5 w-3.5" />
-              <span>+ Thêm Ví / Gia đình</span>
-            </button>
-          </div>
-
-          {/* Family Invite Code Badge when viewing a Family Wallet */}
-          {activeWallet.type === 'family' && activeWallet.inviteCode && (
-            <button
-              type="button"
-              onClick={() => copyInviteCode(activeWallet.inviteCode!)}
-              className="inline-flex h-9 items-center gap-2 rounded-xl border border-purple-200 bg-purple-50/90 px-3 text-xs font-extrabold text-purple-800 transition hover:bg-purple-100 dark:border-purple-500/30 dark:bg-purple-500/15 dark:text-purple-200"
-              title="Sao chép mã mời để người thân cùng tham gia Ví Chung Gia Đình"
-            >
-              <Users className="h-3.5 w-3.5 text-purple-600" />
-              <span>Mã mời gia đình:</span>
-              <span className="font-mono underline">{activeWallet.inviteCode}</span>
-              <Copy className="h-3 w-3" />
-              {copiedCode && (
-                <span className="text-[10px] text-emerald-600">Đã chép!</span>
-              )}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setShowWalletPanel((v) => !v)}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/50 px-3 py-2 text-xs font-extrabold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300"
+          >
+            <FolderPlus className="h-3.5 w-3.5" />
+            <span>+ Thêm ví cá nhân</span>
+          </button>
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setMonthlyInput(String(activeWallet.monthlyBudget));
-              setWeeklyInput(String(activeWallet.weeklyBudget));
-              setEditingBudget((v) => !v);
-            }}
-            className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-indigo-100 bg-white px-3.5 text-xs font-bold text-indigo-700 shadow-2xs transition hover:bg-indigo-50 dark:border-indigo-500/20 dark:bg-[#131B2E] dark:text-indigo-300"
-          >
-            <Edit3 className="h-3.5 w-3.5" />
-            <span>Hạn mức chi</span>
-          </button>
-
           <button
             type="button"
             onClick={exportCsv}
@@ -783,193 +679,61 @@ export function StandardModeView({
         </div>
       </div>
 
-      {/* Multi-Wallet Creation & Family Invite Join Drawer */}
+      {/* Personal Sub-Wallet Creation Drawer */}
       {showWalletPanel && (
-        <div className="rounded-3xl border border-indigo-200 bg-white p-5 shadow-md dark:border-indigo-500/30 dark:bg-[#131B2E] space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-100 pb-3 dark:border-indigo-500/20">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setWalletPanelTab('create');
-                  setWalletActionMsg(null);
-                }}
-                className={`rounded-xl px-3.5 py-1.5 text-xs font-extrabold transition ${
-                  walletPanelTab === 'create'
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
-                }`}
-              >
-                + Tạo Ví Mới (Cá nhân / Gia đình / Tiết kiệm)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setWalletPanelTab('join');
-                  setWalletActionMsg(null);
-                }}
-                className={`rounded-xl px-3.5 py-1.5 text-xs font-extrabold transition ${
-                  walletPanelTab === 'join'
-                    ? 'bg-purple-600 text-white'
-                    : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
-                }`}
-              >
-                Tham gia Ví Gia Đình bằng Mã Mời
-              </button>
+        <form
+          onSubmit={handleCreateWalletSubmit}
+          className="flex flex-wrap items-end justify-between gap-3 rounded-3xl border border-indigo-200 bg-white p-5 shadow-md dark:border-indigo-500/30 dark:bg-[#131B2E]"
+        >
+          <div className="flex flex-1 flex-wrap items-end gap-3">
+            <div className="min-w-[220px] flex-1">
+              <label className="mb-1 block text-xs font-bold text-slate-700 dark:text-slate-300">
+                Tên ví cá nhân mới *
+              </label>
+              <input
+                type="text"
+                required
+                value={newWalletName}
+                onChange={(e) => setNewWalletName(e.target.value)}
+                placeholder="VD: Tài khoản Ngân hàng, Quỹ Tiết kiệm..."
+                className="h-10 w-full rounded-xl border border-indigo-200 bg-slate-50 px-3 text-xs font-bold text-slate-900 dark:bg-slate-900 dark:text-white"
+              />
             </div>
+
+            <div className="w-48">
+              <label className="mb-1 block text-xs font-bold text-slate-700 dark:text-slate-300">
+                Phân loại
+              </label>
+              <select
+                value={newWalletType}
+                onChange={(e) => setNewWalletType(e.target.value as WalletType)}
+                className="h-10 w-full rounded-xl border border-indigo-200 bg-slate-50 px-3 text-xs font-bold text-slate-900 dark:bg-slate-900 dark:text-white"
+              >
+                <option value="personal">Ví Chi Tiêu Cá Nhân</option>
+                <option value="savings">Quỹ Tiết Kiệm Cá Nhân</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="submit"
+              className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-5 text-xs font-extrabold text-white"
+            >
+              Tạo ví ngay
+            </button>
             <button
               type="button"
               onClick={() => setShowWalletPanel(false)}
-              className="text-xs font-bold text-slate-400 hover:text-slate-600"
+              className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600"
             >
               Đóng
             </button>
           </div>
-
-          {walletActionMsg && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">
-              {walletActionMsg}
-            </div>
-          )}
-
-          {walletPanelTab === 'create' ? (
-            <form
-              onSubmit={handleCreateWalletSubmit}
-              className="grid grid-cols-1 gap-3 sm:grid-cols-4 items-end"
-            >
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                  Tên ví mới *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={newWalletName}
-                  onChange={(e) => setNewWalletName(e.target.value)}
-                  placeholder="VD: Quỹ Du Lịch, Ví Sinh Hoạt..."
-                  className="h-10 w-full rounded-xl border border-indigo-200 bg-slate-50 px-3 text-xs font-bold text-slate-900 dark:bg-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                  Loại ví
-                </label>
-                <select
-                  value={newWalletType}
-                  onChange={(e) => setNewWalletType(e.target.value as WalletType)}
-                  className="h-10 w-full rounded-xl border border-indigo-200 bg-slate-50 px-3 text-xs font-bold text-slate-900 dark:bg-slate-900 dark:text-white"
-                >
-                  <option value="personal">Ví Cá Nhân (Riêng tư)</option>
-                  <option value="family">Ví Chung Gia Đình (Có mã mời)</option>
-                  <option value="savings">Ví Tiết Kiệm / Mục tiêu</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                  Hạn mức tháng (VNĐ)
-                </label>
-                <input
-                  type="number"
-                  step="500000"
-                  value={newWalletMonthly}
-                  onChange={(e) => setNewWalletMonthly(e.target.value)}
-                  className="h-10 w-full rounded-xl border border-indigo-200 bg-slate-50 px-3 font-mono text-xs font-bold text-slate-900 dark:bg-slate-900 dark:text-white"
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-4 text-xs font-extrabold text-white"
-              >
-                Tạo ví ngay
-              </button>
-            </form>
-          ) : (
-            <form
-              onSubmit={handleJoinFamilySubmit}
-              className="flex flex-col gap-3 sm:flex-row sm:items-end"
-            >
-              <div className="flex-1">
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                  Nhập mã mời Ví Gia Đình (được hiển thị trên màn hình của thành viên gia đình):
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={joinCodeInput}
-                  onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
-                  placeholder="VD: FP-8492"
-                  className="h-10 w-full rounded-xl border border-purple-200 bg-slate-50 px-3 font-mono text-xs font-bold uppercase text-slate-900 dark:bg-slate-900 dark:text-white"
-                />
-              </div>
-              <button
-                type="submit"
-                className="h-10 rounded-xl bg-purple-600 px-5 text-xs font-extrabold text-white hover:bg-purple-700"
-              >
-                Kết nối Ví Gia Đình
-              </button>
-            </form>
-          )}
-        </div>
+        </form>
       )}
 
-      {/* Optional Budget Settings Editor */}
-      {editingBudget && (
-        <div className="flex flex-wrap items-end justify-between gap-4 rounded-2xl border border-indigo-200 bg-indigo-50/70 p-4 dark:border-indigo-500/30 dark:bg-[#131B2E]">
-          <div className="flex flex-wrap items-center gap-4">
-            <div>
-              <label className="mb-1 block text-xs font-bold text-indigo-800 dark:text-indigo-200">
-                Hạn mức chi tiêu Tháng (VNĐ)
-              </label>
-              <input
-                type="number"
-                step="500000"
-                value={monthlyInput}
-                onChange={(e) => setMonthlyInput(e.target.value)}
-                className="h-9 w-44 rounded-xl border border-indigo-200 bg-white px-3 font-mono text-xs font-bold tabular-nums dark:border-indigo-500/30 dark:bg-slate-900"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-bold text-indigo-800 dark:text-indigo-200">
-                Hạn mức chi tiêu Tuần (VNĐ)
-              </label>
-              <input
-                type="number"
-                step="200000"
-                value={weeklyInput}
-                onChange={(e) => setWeeklyInput(e.target.value)}
-                className="h-9 w-44 rounded-xl border border-indigo-200 bg-white px-3 font-mono text-xs font-bold tabular-nums dark:border-indigo-500/30 dark:bg-slate-900"
-              />
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={async () => {
-                await onUpdateBudget(
-                  Number(monthlyInput) || 6000000,
-                  Number(weeklyInput) || 1500000
-                );
-                setEditingBudget(false);
-              }}
-              className="h-9 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-4 text-xs font-extrabold text-white"
-            >
-              Lưu hạn mức
-            </button>
-            <button
-              type="button"
-              onClick={() => setEditingBudget(false)}
-              className="h-9 rounded-xl border border-slate-300 bg-white px-3 text-xs font-bold text-slate-600"
-            >
-              Đóng
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* 3. SYMMETRICAL 4-COLUMN GEMINI KPI CARDS */}
+      {/* 3. SYMMETRICAL 4-COLUMN PERSONAL FINANCE KPI CARDS (No Budget Limits Clutter) */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {/* KPI 1: Total Income */}
         <div className="flex h-full flex-col justify-between rounded-3xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50/90 via-white to-teal-50/50 p-5 shadow-xs dark:border-emerald-500/20 dark:from-[#131B2E] dark:to-emerald-950/25">
@@ -1003,7 +767,7 @@ export function StandardModeView({
             −{formatVndNumber(stats.totalExpense)} ₫
           </div>
           <div className="mt-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
-            Chi 7 ngày qua: {formatVndNumber(stats.weeklyExpense)} ₫
+            Hôm nay: {formatVndNumber(stats.todayExpense)} ₫
           </div>
         </div>
 
@@ -1021,63 +785,25 @@ export function StandardModeView({
             {formatVndNumber(stats.balance)} ₫
           </div>
           <div className="mt-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-300">
-            {transactions.length} giao dịch đã ghi
+            {transactions.length} giao dịch đã lưu
           </div>
         </div>
 
-        {/* KPI 4: Weekly & Monthly Budget Progress */}
+        {/* KPI 4: 7-Day Activity */}
         <div className="flex h-full flex-col justify-between rounded-3xl border border-purple-200/80 bg-gradient-to-br from-purple-50/90 via-white to-pink-50/40 p-5 shadow-xs dark:border-purple-500/20 dark:from-[#131B2E] dark:to-purple-950/25">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-purple-700 dark:text-purple-300">
-              Tiến Độ Ngân Sách
+              Chi Tiêu 7 Ngày Qua
             </span>
-            {stats.monthlyPct >= 80 && (
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
-            )}
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-purple-500/15 text-purple-600 dark:text-purple-300">
+              <Activity className="h-4 w-4" />
+            </div>
           </div>
-
-          <div className="mt-2 space-y-2.5">
-            <div>
-              <div className="flex justify-between text-[11px] font-bold">
-                <span className="text-slate-600 dark:text-slate-300">
-                  Tháng ({formatVndNumber(activeWallet.monthlyBudget)}đ)
-                </span>
-                <span className="font-mono tabular-nums text-indigo-600 dark:text-indigo-300">
-                  {stats.monthlyPct}%
-                </span>
-              </div>
-              <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-slate-200/80 dark:bg-slate-800">
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    stats.monthlyPct >= 85
-                      ? 'bg-rose-500'
-                      : 'bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500'
-                  }`}
-                  style={{ width: `${stats.monthlyPct}%` }}
-                />
-              </div>
-            </div>
-
-            <div>
-              <div className="flex justify-between text-[11px] font-bold">
-                <span className="text-slate-600 dark:text-slate-300">
-                  Tuần ({formatVndNumber(activeWallet.weeklyBudget)}đ)
-                </span>
-                <span className="font-mono tabular-nums text-purple-600 dark:text-purple-300">
-                  {stats.weeklyPct}%
-                </span>
-              </div>
-              <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-slate-200/80 dark:bg-slate-800">
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    stats.weeklyPct >= 85
-                      ? 'bg-amber-500'
-                      : 'bg-gradient-to-r from-indigo-500 to-pink-500'
-                  }`}
-                  style={{ width: `${stats.weeklyPct}%` }}
-                />
-              </div>
-            </div>
+          <div className="mt-3 font-mono text-2xl font-extrabold tabular-nums tracking-tight text-slate-900 dark:text-white">
+            {formatVndNumber(stats.weeklyExpense)} ₫
+          </div>
+          <div className="mt-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
+            {stats.categoryBreakdown.length} danh mục phát sinh
           </div>
         </div>
       </div>
@@ -1087,7 +813,7 @@ export function StandardModeView({
         {/* Left 4 Cols: Visual Category Breakdown */}
         <div className="rounded-3xl border border-indigo-100 bg-white p-6 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E] lg:col-span-4">
           <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
-            Cơ Cấu Chi Tiêu Theo Danh Mục
+            Cơ Cấu Chi Tiêu Cá Nhân
           </h3>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
             {stats.categoryBreakdown.length > 0
@@ -1113,8 +839,8 @@ export function StandardModeView({
           {/* Ranked Category List */}
           <div className="mt-5 space-y-3">
             {stats.categoryBreakdown.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-indigo-100 py-8 px-4 text-center text-xs text-slate-400 dark:border-indigo-500/20">
-                Ví này hiện đang ở mức 0 ₫. Hãy nhập câu nói trên thanh AI hoặc bấm
+              <div className="rounded-2xl border border-dashed border-indigo-100 px-4 py-8 text-center text-xs text-slate-400 dark:border-indigo-500/20">
+                Ví cá nhân hiện đang ở mức 0 ₫. Hãy nhập câu nói trên thanh AI hoặc bấm
                 &ldquo;Ghi thủ công&rdquo; để bắt đầu theo dõi chi tiêu.
               </div>
             ) : (
@@ -1212,7 +938,7 @@ export function StandardModeView({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Tìm nội dung, người ghi..."
+                placeholder="Tìm nội dung giao dịch..."
                 className="h-9 w-full rounded-xl border border-indigo-100 bg-slate-50 pl-8 pr-7 text-xs font-medium outline-none focus:border-indigo-400 dark:border-indigo-500/20 dark:bg-slate-800"
               />
               {searchQuery && (
@@ -1230,7 +956,7 @@ export function StandardModeView({
           {/* Transaction List */}
           <div className="mt-4 divide-y divide-indigo-100/60 dark:divide-indigo-500/10">
             {filteredTransactions.length === 0 ? (
-              <div className="py-14 text-center space-y-3">
+              <div className="space-y-3 py-14 text-center">
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-500 dark:bg-indigo-500/10">
                   <Calendar className="h-6 w-6" />
                 </div>
@@ -1331,11 +1057,6 @@ export function StandardModeView({
                               minute: '2-digit',
                             })}
                           </span>
-                          {tx.userDisplayName && (
-                            <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                              {tx.userDisplayName}
-                            </span>
-                          )}
                         </div>
                       </div>
                     </div>
