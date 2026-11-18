@@ -1,7 +1,9 @@
 'use client';
 
 import {
+  AlertTriangle,
   Check,
+  Cloud,
   Database,
   Download,
   Edit3,
@@ -14,6 +16,7 @@ import {
   LogOut,
   Moon,
   Palette,
+  RefreshCw,
   ShieldCheck,
   Sun,
   Trash2,
@@ -32,6 +35,8 @@ interface AccountCenterProps {
   wallets: Wallet[];
   activeWalletId: string;
   transactionsCount: number;
+  isCloud: boolean;
+  onSyncNow?: () => Promise<void>;
   uiMode: UIMode;
   darkMode: boolean;
   onToggleDarkMode: () => void;
@@ -53,6 +58,8 @@ export function AccountCenter({
   wallets,
   activeWalletId,
   transactionsCount,
+  isCloud,
+  onSyncNow,
   uiMode,
   darkMode,
   onToggleDarkMode,
@@ -91,6 +98,7 @@ export function AccountCenter({
 
   // Delete account confirmation
   const [confirmDeleteStep, setConfirmDeleteStep] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const strength = useMemo(() => evaluatePasswordStrength(newPwd), [newPwd]);
   const avatarBg = profile.avatarColor || AVATAR_COLOR_PRESETS[0];
@@ -177,13 +185,38 @@ export function AccountCenter({
               </h2>
               <p className="truncate font-mono text-xs text-indigo-100">{profile.email}</p>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-bold">
-                <span className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2.5 py-0.5 backdrop-blur-md">
-                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-300" />
-                  <span>PBKDF2-SHA256</span>
-                </span>
+                {isCloud ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-400/25 px-2.5 py-0.5 text-emerald-100 backdrop-blur-md">
+                    <Cloud className="h-3.5 w-3.5 text-emerald-300" />
+                    <span>Đồng bộ Cloud (PC &amp; ĐT)</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/25 px-2.5 py-0.5 text-amber-100 backdrop-blur-md">
+                    <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />
+                    <span>Chỉ lưu trên máy này</span>
+                  </span>
+                )}
                 <span className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-0.5">
+                  <ShieldCheck className="h-3.5 w-3.5 text-sky-200" />
                   <span>{wallets.length} ví · {transactionsCount} giao dịch</span>
                 </span>
+                {onSyncNow && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setSyncing(true);
+                      try {
+                        await onSyncNow();
+                      } finally {
+                        setSyncing(false);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2.5 py-0.5 text-white hover:bg-white/30"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${syncing ? 'animate-spin' : ''}`} />
+                    <span>{syncing ? 'Đang tải...' : 'Đồng bộ ngay'}</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>

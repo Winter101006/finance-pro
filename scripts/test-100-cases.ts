@@ -399,7 +399,7 @@ async function runAll105Tests() {
         email: 'huan@vnu.edu.vn',
         newPassword: 'RecoveredPass@3',
       });
-      assert.strictEqual(reset.profile.email, 'huan@vnu.edu.vn');
+      assert.ok('profile' in reset && reset.profile.email === 'huan@vnu.edu.vn');
       await FinanceRepository.signOutUser();
       const relogin = await FinanceRepository.signInUser({
         email: 'huan@vnu.edu.vn',

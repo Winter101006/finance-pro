@@ -1,8 +1,10 @@
 'use client';
 
 import {
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  Cloud,
   Eye,
   EyeOff,
   KeyRound,
@@ -38,6 +40,8 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const isCloudMode = FinanceRepository.isCloudEnabled();
   const [savedAccounts, setSavedAccounts] = useState<
     Array<Pick<UserProfile, 'id' | 'email' | 'displayName' | 'avatarText' | 'avatarColor'>>
   >([]);
@@ -58,6 +62,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setSuccessMsg(null);
     setLoading(true);
 
     try {
@@ -74,7 +79,11 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
           email,
           newPassword: password,
         });
-        onAuthenticated(res);
+        if ('resetEmailSent' in res && res.resetEmailSent) {
+          setSuccessMsg(res.message);
+        } else if ('profile' in res) {
+          onAuthenticated(res);
+        }
       } else {
         const res = await FinanceRepository.signInUser({
           email,
@@ -109,10 +118,30 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
           </div>
         </div>
 
-        <div className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200/80 bg-white/85 px-3 py-1 text-[11px] font-bold text-indigo-700 shadow-2xs backdrop-blur-md sm:px-3.5 sm:py-1.5 sm:text-xs">
-          <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 sm:h-4 sm:w-4" />
-          <span className="hidden sm:inline">Bảo mật PBKDF2-SHA256 · Dữ liệu độc lập từng tài khoản</span>
-          <span className="sm:hidden">PBKDF2 Bảo mật</span>
+        <div
+          className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-bold shadow-2xs backdrop-blur-md sm:px-3.5 sm:py-1.5 sm:text-xs ${
+            isCloudMode
+              ? 'border-emerald-200 bg-emerald-50/90 text-emerald-800'
+              : 'border-amber-200 bg-amber-50/90 text-amber-800'
+          }`}
+        >
+          {isCloudMode ? (
+            <>
+              <Cloud className="h-3.5 w-3.5 text-emerald-600 sm:h-4 sm:w-4" />
+              <span className="hidden sm:inline">
+                Supabase Cloud · Đồng bộ 1 tài khoản Máy tính &amp; Điện thoại
+              </span>
+              <span className="sm:hidden">Cloud Sync</span>
+            </>
+          ) : (
+            <>
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-600 sm:h-4 sm:w-4" />
+              <span className="hidden sm:inline">
+                Chế độ cục bộ · Chưa gắn biến môi trường Supabase trên Host
+              </span>
+              <span className="sm:hidden">Chế độ cục bộ</span>
+            </>
+          )}
         </div>
       </div>
 
@@ -218,6 +247,26 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               </div>
             )}
 
+            {/* Local-Only Warning Banner when deployed without Supabase Env Vars */}
+            {!isCloudMode && (
+              <div className="mt-4 flex items-start gap-2.5 rounded-2xl border border-amber-200 bg-amber-50/90 px-3.5 py-3 text-[11px] font-semibold leading-relaxed text-amber-900">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <div>
+                  <strong>Chế độ Lưu cục bộ:</strong> Máy chủ web này chưa cài biến{' '}
+                  <code className="font-mono font-bold">NEXT_PUBLIC_SUPABASE_URL</code> &amp;{' '}
+                  <code className="font-mono font-bold">NEXT_PUBLIC_SUPABASE_ANON_KEY</code>.
+                  Để đăng nhập cùng 1 tài khoản giữa <strong>Máy tính &amp; Điện thoại</strong>,
+                  hãy thêm 2 biến này trên Vercel Settings rồi Redeploy.
+                </div>
+              </div>
+            )}
+
+            {successMsg && (
+              <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-800">
+                {successMsg}
+              </div>
+            )}
+
             {errorMsg && (
               <div className="mt-4 space-y-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700">
                 <div>{errorMsg}</div>
@@ -287,73 +336,76 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 </div>
               </div>
 
-              <div>
-                <div className="mb-1.5 flex items-center justify-between">
-                  <label className="block text-xs font-bold text-slate-700">
-                    {mode === 'reset' ? 'Mật khẩu mới (tối thiểu 6 ký tự) *' : 'Mật khẩu *'}
-                  </label>
-                  {mode === 'signin' && (
+              {!(mode === 'reset' && isCloudMode) && (
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <label className="block text-xs font-bold text-slate-700">
+                      {mode === 'reset' ? 'Mật khẩu mới (tối thiểu 6 ký tự) *' : 'Mật khẩu *'}
+                    </label>
+                    {mode === 'signin' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMode('reset');
+                          setErrorMsg(null);
+                          setSuccessMsg(null);
+                        }}
+                        className="text-[11px] font-bold text-indigo-600 hover:underline"
+                      >
+                        Quên / Đặt lại mật khẩu?
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <Lock className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Nhập tối thiểu 6 ký tự"
+                      className="h-12 w-full rounded-2xl border border-indigo-200 bg-slate-50/70 pl-10 pr-12 text-base font-semibold text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white sm:text-sm"
+                    />
                     <button
                       type="button"
-                      onClick={() => {
-                        setMode('reset');
-                        setErrorMsg(null);
-                      }}
-                      className="text-[11px] font-bold text-indigo-600 hover:underline"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="absolute right-3 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-xl text-slate-400 hover:text-indigo-600"
+                      title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu để kiểm tra'}
                     >
-                      Quên / Đặt lại mật khẩu?
+                      {showPassword ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
                     </button>
+                  </div>
+
+                  {/* Live Password Strength Meter for Signup & Reset */}
+                  {(mode === 'signup' || mode === 'reset') && password.length > 0 && (
+                    <div className="mt-2 flex items-center justify-between text-[11px] font-bold">
+                      <div className="mr-3 flex flex-1 gap-1">
+                        {[1, 2, 3, 4].map((lvl) => (
+                          <div
+                            key={lvl}
+                            className="h-1.5 flex-1 rounded-full bg-slate-200 transition-colors"
+                            style={{
+                              backgroundColor:
+                                passwordStrength.score >= lvl
+                                  ? passwordStrength.color
+                                  : undefined,
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <span style={{ color: passwordStrength.color }}>
+                        {passwordStrength.label}
+                      </span>
+                    </div>
                   )}
                 </div>
-                <div className="relative">
-                  <Lock className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    required
-                    minLength={6}
-                    autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Nhập tối thiểu 6 ký tự"
-                    className="h-12 w-full rounded-2xl border border-indigo-200 bg-slate-50/70 pl-10 pr-12 text-base font-semibold text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white sm:text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((v) => !v)}
-                    className="absolute right-3 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-xl text-slate-400 hover:text-indigo-600"
-                    title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu để kiểm tra'}
-                  >
-                    {showPassword ? (
-                      <EyeOff className="h-4 w-4" />
-                    ) : (
-                      <Eye className="h-4 w-4" />
-                    )}
-                  </button>
-                </div>
-
-                {/* Live Password Strength Meter for Signup & Reset */}
-                {(mode === 'signup' || mode === 'reset') && password.length > 0 && (
-                  <div className="mt-2 flex items-center justify-between text-[11px] font-bold">
-                    <div className="mr-3 flex flex-1 gap-1">
-                      {[1, 2, 3, 4].map((lvl) => (
-                        <div
-                          key={lvl}
-                          className="h-1.5 flex-1 rounded-full bg-slate-200 transition-colors"
-                          style={{
-                            backgroundColor:
-                              passwordStrength.score >= lvl
-                                ? passwordStrength.color
-                                : undefined,
-                          }}
-                        />
-                      ))}
-                    </div>
-                    <span style={{ color: passwordStrength.color }}>
-                      {passwordStrength.label}
-                    </span>
-                  </div>
-                )}
-              </div>
+              )}
 
               <button
                 type="submit"
@@ -378,7 +430,11 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 ) : (
                   <>
                     <RefreshCw className="h-4 w-4" />
-                    <span>Lưu mật khẩu mới &amp; Đăng nhập</span>
+                    <span>
+                      {isCloudMode
+                        ? 'Gửi email đặt lại mật khẩu Cloud'
+                        : 'Lưu mật khẩu mới & Đăng nhập'}
+                    </span>
                   </>
                 )}
               </button>

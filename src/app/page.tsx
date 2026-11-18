@@ -21,6 +21,7 @@ import { type MobileNavTab, StandardModeView } from '@/components/StandardModeVi
 import { VoiceRecorderSheet } from '@/components/VoiceRecorderSheet';
 import { CATEGORY_BY_SLUG } from '@/data/categories';
 import { AVATAR_COLOR_PRESETS, FinanceRepository } from '@/lib/dataAdapter';
+import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { buildSpokenSummaryVi, parseVietnameseExpenseText } from '@/lib/vietnameseParser';
 import type {
   CategorySlug,
@@ -40,6 +41,7 @@ export default function FinanceProPage() {
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [activeWalletId, setActiveWalletId] = useState<string>('');
   const [transactions, setTransactions] = useState<FinanceTransaction[]>([]);
+  const [isCloud, setIsCloud] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [voiceSheetOpen, setVoiceSheetOpen] = useState(false);
@@ -74,6 +76,7 @@ export default function FinanceProPage() {
 
   const refreshSession = useCallback(async () => {
     const res = await FinanceRepository.getCurrentSession();
+    setIsCloud(res.isCloud);
     if (res.profile && res.wallets.length > 0) {
       setProfile(res.profile);
       setUiMode(res.profile.uiMode);
@@ -116,6 +119,47 @@ export default function FinanceProPage() {
       refreshTransactions(activeWalletId, profile.id);
     }
   }, [hydrated, profile, activeWalletId, refreshTransactions]);
+
+  // Auto-sync across PC & Phone on tab focus + Supabase Realtime listener
+  useEffect(() => {
+    if (!hydrated || !profile || !activeWalletId || !isCloud) return;
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        refreshTransactions(activeWalletId, profile.id);
+      }
+    };
+
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    const supabase = getSupabaseBrowserClient();
+    const channel = supabase
+      ? supabase
+          .channel(`tx-sync-${activeWalletId}`)
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'transactions',
+              filter: `wallet_id=eq.${activeWalletId}`,
+            },
+            () => {
+              refreshTransactions(activeWalletId, profile.id);
+            }
+          )
+          .subscribe()
+      : null;
+
+    return () => {
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      if (supabase && channel) {
+        supabase.removeChannel(channel);
+      }
+    };
+  }, [hydrated, profile, activeWalletId, isCloud, refreshTransactions]);
 
   // Manage dark mode class
   useEffect(() => {
@@ -425,6 +469,7 @@ export default function FinanceProPage() {
     return (
       <AuthScreen
         onAuthenticated={(res) => {
+          setIsCloud(res.isCloud);
           setProfile(res.profile);
           setUiMode(res.profile.uiMode);
           setWallets(res.wallets);
@@ -458,6 +503,16 @@ export default function FinanceProPage() {
                 <span className="truncate bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text text-base font-extrabold tracking-tight text-transparent dark:from-sky-400 dark:via-indigo-300 dark:to-purple-400 sm:text-lg">
                   Finance Pro
                 </span>
+                <span
+                  className={`inline-block h-2 w-2 rounded-full ${
+                    isCloud ? 'bg-emerald-500' : 'bg-amber-400'
+                  }`}
+                  title={
+                    isCloud
+                      ? 'Đang đồng bộ Supabase Cloud (PC & Điện thoại)'
+                      : 'Chế độ Lưu cục bộ trên thiết bị này'
+                  }
+                />
               </div>
               <div className="truncate text-[11px] font-semibold text-slate-500 dark:text-slate-400">
                 {activeWallet.name} · {profile.displayName}
@@ -558,6 +613,11 @@ export default function FinanceProPage() {
               wallets={wallets}
               activeWalletId={activeWallet.id}
               transactionsCount={transactions.length}
+              isCloud={isCloud}
+              onSyncNow={async () => {
+                await refreshSession();
+                await refreshTransactions(activeWallet.id, profile.id);
+              }}
               uiMode={uiMode}
               darkMode={darkMode}
               onToggleDarkMode={() => setDarkMode((d) => !d)}
@@ -718,6 +778,11 @@ export default function FinanceProPage() {
           wallets={wallets}
           activeWalletId={activeWallet.id}
           transactionsCount={transactions.length}
+          isCloud={isCloud}
+          onSyncNow={async () => {
+            await refreshSession();
+            await refreshTransactions(activeWallet.id, profile.id);
+          }}
           uiMode={uiMode}
           darkMode={darkMode}
           onToggleDarkMode={() => setDarkMode((d) => !d)}
