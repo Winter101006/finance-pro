@@ -74,6 +74,9 @@ Quy tắc quy đổi tiền tiếng Việt bắt buộc:
 - "chục" = nhân 10.000 (VD: "5 chục" = 50000).
 - "trăm", "lít", "xị" = nhân 100.000 (VD: "3 lít" = 300000, "1 trăm rưỡi" = 150000).
 - "củ", "triệu", "tr" = nhân 1.000.000 (VD: "nửa củ" = 500000, "2 củ rưỡi" = 2500000, "2tr5" = 2500000).
+- Phân biệt chuẩn TIỀN CỘNG ("income", mã "thu-nhap") vs TIỀN TRỪ ("expense"):
+  + Tiền nhận được từ người khác ("mẹ cho 75k", "bố gửi 2 triệu", "bạn trả 100k", "lương", "thưởng", "học bổng", "hoàn tiền", "cộng 75k") => type = "income", categorySlug = "thu-nhap".
+  + Tiền mình chi ra ("mua thuốc cho mẹ 3 lít", "biếu mẹ 500k", "ăn phở 45k", "đổ xăng 50k") => type = "expense".
 - Nếu người dùng nói nhiều khoản trong 1 câu (VD: "sáng mua rau 35 nghìn với mua thịt bò 1 trăm rưỡi"), phải tách thành 2 phần tử riêng biệt trong mảng JSON.
 - Chọn đúng categorySlug trong 10 mã: "an-uong", "di-cho", "di-chuyen", "hoa-don", "hoc-tap", "mua-sam", "suc-khoe", "gia-dinh", "thu-nhap", "khac".`;
 
@@ -102,13 +105,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 function sanitizeAiItems(
   rawItems: unknown,
   fallbackText: string,
-  nowIso: string
+  nowIso: string,
+  forcedType: 'auto' | TransactionType = 'auto'
 ): ParsedExpenseItem[] {
   if (!Array.isArray(rawItems) || rawItems.length === 0) {
     return [];
   }
 
-  const localItems = parseVietnameseExpenseText(fallbackText, nowIso);
+  const localItems = parseVietnameseExpenseText(fallbackText, nowIso, forcedType);
 
   const valid: ParsedExpenseItem[] = [];
   for (let i = 0; i < rawItems.length; i++) {
@@ -127,18 +131,37 @@ function sanitizeAiItems(
         ? row.description.trim().slice(0, 180)
         : localItems[i]?.description || 'Chi tiêu phát sinh';
 
-    const inferred = classifyVietnameseCategory(description);
+    const inferred = classifyVietnameseCategory(`${description} ${fallbackText}`);
     const rawSlug = String(row?.categorySlug || '').trim() as CategorySlug;
-    const categorySlug: CategorySlug = VALID_CATEGORY_SLUGS.includes(rawSlug)
+    let categorySlug: CategorySlug = VALID_CATEGORY_SLUGS.includes(rawSlug)
       ? rawSlug
       : inferred.categorySlug;
 
-    const type: TransactionType =
-      row?.type === 'income' || categorySlug === 'thu-nhap' ? 'income' : 'expense';
+    // Preserve clear Vietnamese income semantics ("mẹ cho 75k", "cộng 75k", ...)
+    let type: TransactionType =
+      row?.type === 'income' || categorySlug === 'thu-nhap' || inferred.type === 'income'
+        ? 'income'
+        : 'expense';
+
+    if (type === 'income') {
+      categorySlug = 'thu-nhap';
+    }
+
+    if (forcedType === 'income') {
+      type = 'income';
+      categorySlug = 'thu-nhap';
+    } else if (forcedType === 'expense') {
+      type = 'expense';
+      if (categorySlug === 'thu-nhap') {
+        categorySlug = 'khac';
+      }
+    }
 
     const spokenConfirmationVi =
+      forcedType === 'auto' &&
       typeof row?.spokenConfirmationVi === 'string' &&
-      row.spokenConfirmationVi.trim().length > 10
+      row.spokenConfirmationVi.trim().length > 10 &&
+      !(inferred.type === 'income' && row?.type !== 'income')
         ? row.spokenConfirmationVi.trim()
         : buildSpokenConfirmationVi(amount, description, categorySlug, type);
 
@@ -157,11 +180,13 @@ function sanitizeAiItems(
 
 /**
  * Low-latency Smart Dual-Mode Gemini + Vietnamese NLP Expense Parser.
+ * - Supports forcedType ('auto' | 'expense' | 'income')
  * - Uses memory LRU cache for < 1ms repeated utterances
  * - Hard 2,500ms wall-clock budget with circuit breaker so mobile users NEVER experience 10s+ stalls
  */
 export async function parseExpenseWithGeminiOrFallback(
-  rawInput: string
+  rawInput: string,
+  forcedType: 'auto' | TransactionType = 'auto'
 ): Promise<ParseExpenseResponse> {
   const cleaned = rawInput.trim();
   const nowIso = new Date().toISOString();
@@ -174,7 +199,7 @@ export async function parseExpenseWithGeminiOrFallback(
     };
   }
 
-  const cacheKey = cleaned.toLowerCase();
+  const cacheKey = `${forcedType}::${cleaned.toLowerCase()}`;
   const cached = PARSE_CACHE.get(cacheKey);
   if (cached) {
     return {
@@ -189,10 +214,16 @@ export async function parseExpenseWithGeminiOrFallback(
   if (apiKey && nowMs >= aiCooldownUntil) {
     try {
       const ai = new GoogleGenAI({ apiKey });
+      const forcedInstruction =
+        forcedType === 'income'
+          ? '\n(LƯU Ý: Người dùng đã chọn sẵn đây là KHOẢN THU / TIỀN CỘNG, bắt buộc set type="income", categorySlug="thu-nhap".)'
+          : forcedType === 'expense'
+          ? '\n(LƯU Ý: Người dùng đã chọn sẵn đây là KHOẢN CHI / TIỀN TRỪ, bắt buộc set type="expense".)'
+          : '';
       const response = await withTimeout(
         ai.models.generateContent({
           model: 'gemini-3.5-flash-lite',
-          contents: `${SYSTEM_PROMPT}\n\nCâu nói của người dùng: "${cleaned}"`,
+          contents: `${SYSTEM_PROMPT}${forcedInstruction}\n\nCâu nói của người dùng: "${cleaned}"`,
           config: {
             responseMimeType: 'application/json',
             responseJsonSchema: EXPENSE_ARRAY_SCHEMA,
@@ -204,7 +235,7 @@ export async function parseExpenseWithGeminiOrFallback(
 
       const text = response.text || '';
       const parsedJson = JSON.parse(text);
-      const items = sanitizeAiItems(parsedJson, cleaned, nowIso);
+      const items = sanitizeAiItems(parsedJson, cleaned, nowIso, forcedType);
       if (items.length > 0) {
         const res: ParseExpenseResponse = {
           items,
@@ -220,13 +251,12 @@ export async function parseExpenseWithGeminiOrFallback(
         return res;
       }
     } catch {
-      // Trip short 30s circuit breaker so subsequent utterances serve instantaneously in <1ms
       aiCooldownUntil = Date.now() + 30_000;
     }
   }
 
   // Deterministic Local Vietnamese NLP Fallback (< 1ms latency)
-  const fallbackItems = parseVietnameseExpenseText(cleaned, nowIso);
+  const fallbackItems = parseVietnameseExpenseText(cleaned, nowIso, forcedType);
 
   const normalizedFallback = fallbackItems.map((item) => ({
     ...item,

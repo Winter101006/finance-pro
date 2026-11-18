@@ -166,7 +166,10 @@ export default function FinanceProPage() {
   };
 
   // Zero-delay Optimistic AI / NLP Expense Submission
-  const handleSubmitNaturalInput = async (rawText: string) => {
+  const handleSubmitNaturalInput = async (
+    rawText: string,
+    forcedType: 'auto' | TransactionType = 'auto'
+  ) => {
     if (!profile || !activeWallet) return;
     const cleanText = rawText.trim();
     if (!cleanText) return;
@@ -175,7 +178,7 @@ export default function FinanceProPage() {
     const nowIso = new Date().toISOString();
 
     // Step 1: 0ms Optimistic On-Device Parse so user experiences ZERO wait delay
-    const optimisticParsed = parseVietnameseExpenseText(cleanText, nowIso);
+    const optimisticParsed = parseVietnameseExpenseText(cleanText, nowIso, forcedType);
     const optimisticIds: string[] = [];
 
     if (optimisticParsed.length > 0) {
@@ -215,11 +218,11 @@ export default function FinanceProPage() {
     }
 
     try {
-      // Step 2: Confirm / refine via backend (/api/parse-expense has 2.4s timeout + cache)
+      // Step 2: Confirm / refine via backend (/api/parse-expense has 2.5s timeout + cache)
       const response = await fetch('/api/parse-expense', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: cleanText }),
+        body: JSON.stringify({ text: cleanText, forcedType }),
       });
 
       const parsed: ParseExpenseResponse = await response.json();

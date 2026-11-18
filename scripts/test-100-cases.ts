@@ -112,6 +112,14 @@ async function runAll105Tests() {
     { name: 'Hoàn tiền cashback', input: 'nhận hoàn tiền 150k', amount: 150_000, slug: 'thu-nhap', type: 'income' },
     { name: 'Số format có dấu chấm', input: 'mua bàn phím cơ 1.250.000 vnđ', amount: 1_250_000, slug: 'mua-sam', type: 'expense' },
     { name: 'Không nhầm năm dương lịch', input: 'năm 2026 đóng học phí 350k', amount: 350_000, slug: 'hoc-tap', type: 'expense' },
+    { name: 'Mẹ cho tiền cộng', input: 'mẹ cho 75k', amount: 75_000, slug: 'thu-nhap', type: 'income' },
+    { name: 'Bố cho tiền cộng', input: 'bố cho 200k', amount: 200_000, slug: 'thu-nhap', type: 'income' },
+    { name: 'Bố mẹ gửi tiền cộng', input: 'bố mẹ gửi 3 triệu', amount: 3_000_000, slug: 'thu-nhap', type: 'income' },
+    { name: 'Bạn trả tiền cộng', input: 'bạn trả 100k', amount: 100_000, slug: 'thu-nhap', type: 'income' },
+    { name: 'Được lì xì tiền cộng', input: 'ông bà lì xì 500k', amount: 500_000, slug: 'thu-nhap', type: 'income' },
+    { name: 'Từ khóa cộng trực tiếp', input: 'cộng 75k', amount: 75_000, slug: 'thu-nhap', type: 'income' },
+    { name: 'Biếu mẹ là tiền trừ', input: 'biếu mẹ 500k', amount: 500_000, slug: 'gia-dinh', type: 'expense' },
+    { name: 'Mua thuốc cho mẹ vẫn là tiền trừ', input: 'mua thuốc cho mẹ 3 lít', amount: 300_000, slug: 'suc-khoe', type: 'expense' },
   ];
 
   for (const tc of nlpSingleCases) {
@@ -123,6 +131,19 @@ async function runAll105Tests() {
       assert.strictEqual(res[0].type, tc.type, `Type mismatch for "${tc.input}"`);
     });
   }
+
+  await testCase('NLP ForcedType: Explicit income overrides bare number', () => {
+    const res = parseVietnameseExpenseText('75k', undefined, 'income');
+    assert.strictEqual(res[0].type, 'income');
+    assert.strictEqual(res[0].categorySlug, 'thu-nhap');
+    assert.strictEqual(res[0].amount, 75_000);
+  });
+
+  await testCase('NLP ForcedType: Explicit expense overrides phrase', () => {
+    const res = parseVietnameseExpenseText('tiền đóng góp 100k', undefined, 'expense');
+    assert.strictEqual(res[0].type, 'expense');
+    assert.strictEqual(res[0].amount, 100_000);
+  });
 
   // 5 more NLP compound & edge cases -> total 45 cases in Group A
   await testCase('NLP Compound 2 items', () => {
@@ -789,7 +810,7 @@ async function runAll105Tests() {
     process.env.NEXT_PUBLIC_SUPABASE_URL = savedSbUrl;
   }
 
-  console.log(`\n✅ ĐÃ KIỂM THỬ THÀNH CÔNG ${passedCount}/105 KỊCH BẢN (PASS 100%, 0 LỖI)!`);
+  console.log(`\n✅ ĐÃ KIỂM THỬ THÀNH CÔNG ${passedCount} KỊCH BẢN (PASS 100%, 0 LỖI)!`);
   assert.ok(passedCount >= 100, `Expected >= 100 tests, ran ${passedCount}`);
 }
 

@@ -6,16 +6,19 @@ import {
   EyeOff,
   Keyboard,
   Loader2,
+  MessageSquarePlus,
   Mic,
+  Send,
   Sparkles,
   Trash2,
   Undo2,
   Volume2,
   Wallet as WalletIcon,
+  X,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { CATEGORY_BY_SLUG } from '@/data/categories';
-import { formatVndNumber } from '@/lib/vietnameseParser';
+import { formatVndNumber, parseVietnameseExpenseText } from '@/lib/vietnameseParser';
 import type { FinanceTransaction, TransactionType, Wallet } from '@/types/finance';
 import { CategoryIcon } from './CategoryIcon';
 
@@ -24,7 +27,10 @@ interface SeniorModeViewProps {
   wallets: Wallet[];
   onSelectWallet: (walletId: string) => void;
   transactions: FinanceTransaction[];
-  onSubmitNaturalInput: (text: string) => Promise<void>;
+  onSubmitNaturalInput: (
+    text: string,
+    forcedType?: 'auto' | TransactionType
+  ) => Promise<void>;
   onOpenVoiceSheet: () => void;
   isParsing: boolean;
   lastAddedBatch: {
@@ -38,10 +44,10 @@ interface SeniorModeViewProps {
 }
 
 const SIMPLE_QUICK_PHRASES = [
-  'Ăn sáng 45 nghìn',
-  'Đổ xăng 70 nghìn',
-  'Đi chợ mua đồ ăn 150 nghìn',
-  'Đóng tiền điện nước 850 nghìn',
+  { text: 'Mẹ cho 75k', label: '+ Thu: Mẹ cho 75k' },
+  { text: 'Ăn sáng 45 nghìn', label: '− Chi: Ăn sáng 45 nghìn' },
+  { text: 'Đi chợ mua đồ ăn 150 nghìn', label: '− Chi: Đi chợ 150 nghìn' },
+  { text: 'Đóng tiền điện nước 850 nghìn', label: '− Chi: Tiền điện nước 850k' },
 ];
 
 const QUICK_DENOMINATIONS = [
@@ -66,17 +72,33 @@ export function SeniorModeView({
   onSpeakVietnamese,
 }: SeniorModeViewProps) {
   const [hideBalance, setHideBalance] = useState(false);
+  const [quickChatText, setQuickChatText] = useState('');
+  const [chatTypeMode, setChatTypeMode] = useState<'auto' | TransactionType>('auto');
   const [showKeyboard, setShowKeyboard] = useState(false);
   const [manualType, setManualType] = useState<TransactionType>('expense');
   const [manualItem, setManualItem] = useState('Ăn uống hàng ngày');
   const [manualAmount, setManualAmount] = useState<number>(50000);
 
+  // Instant 0ms live preview of quick chat message so user sees + vs - immediately
+  const liveChatPreview = useMemo(() => {
+    if (!quickChatText.trim()) return [];
+    return parseVietnameseExpenseText(quickChatText.trim(), undefined, chatTypeMode);
+  }, [quickChatText, chatTypeMode]);
+
+  const handleQuickChatSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickChatText.trim() || isParsing) return;
+    const msg = quickChatText.trim();
+    const typeChoice = chatTypeMode;
+    setQuickChatText('');
+    await onSubmitNaturalInput(msg, typeChoice);
+  };
+
   const handleManualKeyboardSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualItem.trim() || manualAmount <= 0 || isParsing) return;
-    const prefix = manualType === 'income' ? 'Nhận thu nhập ' : '';
-    const sentence = `${prefix}${manualItem.trim()} ${manualAmount} đồng`;
-    await onSubmitNaturalInput(sentence);
+    const sentence = `${manualItem.trim()} ${manualAmount} đồng`;
+    await onSubmitNaturalInput(sentence, manualType);
     setShowKeyboard(false);
   };
 
@@ -179,46 +201,155 @@ export function SeniorModeView({
         )}
       </div>
 
-      {/* 2. FAST VOICE STUDIO TRIGGER & KEYBOARD PANEL */}
-      <div className="space-y-5 rounded-3xl border border-indigo-200/80 bg-white p-5 text-center shadow-[0_12px_36px_rgb(79,70,229,0.08)] dark:border-indigo-500/25 dark:bg-[#131B2E] sm:p-8">
-        <p className="text-sm font-bold text-slate-700 dark:text-slate-200 sm:text-lg">
-          Bấm nút Micro để đọc thu/chi kèm sóng âm trực tiếp, hoặc nhập nhanh bằng bàn phím:
-        </p>
+      {/* 2. DUAL PARALLEL INPUT CARD: GIỌNG NÓI (MIC) + NHẮN TIN NHANH SONG SONG */}
+      <div className="space-y-5 rounded-3xl border border-indigo-200/80 bg-white p-5 shadow-[0_12px_36px_rgb(79,70,229,0.08)] dark:border-indigo-500/25 dark:bg-[#131B2E] sm:p-6">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-12 md:items-stretch">
+          {/* Left 5 Cols: Giant Voice Button */}
+          <button
+            type="button"
+            onClick={onOpenVoiceSheet}
+            disabled={isParsing}
+            className="flex min-h-[112px] flex-col items-center justify-center gap-2 rounded-3xl bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-600 px-5 py-5 text-white shadow-xl shadow-indigo-500/25 transition hover:brightness-105 active:scale-[0.98] md:col-span-5"
+          >
+            {isParsing ? (
+              <Loader2 className="h-8 w-8 animate-spin" />
+            ) : (
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/20 backdrop-blur-md">
+                <Mic className="h-6 w-6" />
+              </div>
+            )}
+            <span className="text-base font-black sm:text-lg">
+              {isParsing ? 'Đang lưu...' : 'Bấm để nói thu / chi'}
+            </span>
+            <span className="text-[11px] font-semibold text-indigo-100">
+              Sóng âm trực tiếp khi bạn nói
+            </span>
+          </button>
 
-        <button
-          type="button"
-          onClick={onOpenVoiceSheet}
-          disabled={isParsing}
-          className="flex min-h-[76px] w-full flex-col items-center justify-center gap-2 rounded-3xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 px-6 py-5 text-lg font-black text-white shadow-xl shadow-indigo-500/25 transition hover:brightness-105 active:scale-[0.98] sm:text-2xl"
-        >
-          {isParsing ? (
-            <div className="flex items-center gap-3">
-              <Loader2 className="h-7 w-7 animate-spin" />
-              <span>Đang lưu giao dịch...</span>
+          {/* Right 7 Cols: Always-Visible Parallel Quick Message Box with + / - Selector */}
+          <form
+            onSubmit={handleQuickChatSubmit}
+            className="flex flex-col justify-between gap-3 rounded-3xl border border-indigo-100 bg-slate-50/80 p-4 dark:border-indigo-500/20 dark:bg-[#0B0F19]/80 md:col-span-7"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">
+                <MessageSquarePlus className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
+                <span>Hoặc nhắn tin nhanh:</span>
+              </div>
+
+              {/* Explicit Type Pill Toggle: Tự động | Chi tiêu (-) | Thu nhập (+) */}
+              <div className="inline-flex rounded-xl border border-indigo-100 bg-white p-0.5 dark:border-white/10 dark:bg-slate-900">
+                {(
+                  [
+                    {
+                      id: 'auto',
+                      label: 'Tự động',
+                      activeCls: 'bg-indigo-600 text-white',
+                    },
+                    {
+                      id: 'expense',
+                      label: '− Chi tiêu',
+                      activeCls: 'bg-rose-600 text-white',
+                    },
+                    {
+                      id: 'income',
+                      label: '+ Thu nhập',
+                      activeCls: 'bg-emerald-600 text-white',
+                    },
+                  ] as const
+                ).map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setChatTypeMode(t.id)}
+                    className={`rounded-lg px-2.5 py-1 text-[11px] font-extrabold transition ${
+                      chatTypeMode === t.id
+                        ? t.activeCls
+                        : 'text-slate-600 hover:text-indigo-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
             </div>
-          ) : (
-            <div className="flex items-center justify-center gap-3">
-              <Mic className="h-7 w-7 shrink-0" />
-              <span>Bấm để nói (Sóng âm trực tiếp)</span>
+
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={quickChatText}
+                  onChange={(e) => setQuickChatText(e.target.value)}
+                  placeholder='VD: "Mẹ cho 75k" hoặc "Đi chợ 120k"...'
+                  className="h-12 w-full rounded-2xl border border-indigo-200 bg-white px-4 pr-9 text-base font-semibold text-slate-900 placeholder-slate-400 outline-none focus:border-indigo-500 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-white"
+                />
+                {quickChatText && (
+                  <button
+                    type="button"
+                    onClick={() => setQuickChatText('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                disabled={isParsing || !quickChatText.trim()}
+                className="inline-flex h-12 shrink-0 items-center justify-center gap-1.5 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 px-4 text-xs font-extrabold text-white shadow-md hover:brightness-105 disabled:opacity-50"
+              >
+                <Send className="h-4 w-4" />
+                <span>Lưu</span>
+              </button>
             </div>
-          )}
-        </button>
+
+            {/* 0ms Live Color-Coded Preview */}
+            {liveChatPreview.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {liveChatPreview.map((item, idx) => (
+                  <span
+                    key={idx}
+                    className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-extrabold ${
+                      item.type === 'income'
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-950/50 dark:text-emerald-200'
+                        : 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/30 dark:bg-rose-950/50 dark:text-rose-200'
+                    }`}
+                  >
+                    <span>
+                      {item.type === 'income' ? '+ Thu nhập' : '− Chi tiêu'}:
+                    </span>
+                    <span className="font-mono">
+                      {item.type === 'income' ? '+' : '−'}
+                      {formatVndNumber(item.amount)} ₫
+                    </span>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="text-[11px] font-medium text-slate-400">
+                Mẹo: Chọn sẵn <strong>+ Thu nhập</strong> hoặc <strong>− Chi tiêu</strong> nếu
+                muốn cố định tiền cộng/trừ.
+              </div>
+            )}
+          </form>
+        </div>
 
         {/* Quick 1-Tap Common Phrases */}
         <div className="pt-1 text-left">
           <div className="mb-2 text-xs font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400">
             Hoặc chạm 1 lần để ghi mẫu nhanh:
           </div>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-2.5">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {SIMPLE_QUICK_PHRASES.map((phrase) => (
               <button
-                key={phrase}
+                key={phrase.text}
                 type="button"
                 disabled={isParsing}
-                onClick={() => onSubmitNaturalInput(phrase)}
-                className="flex min-h-[48px] items-center justify-between rounded-2xl border border-indigo-100 bg-indigo-50/60 px-4 py-2.5 text-left text-sm font-bold text-slate-800 transition hover:border-indigo-300 hover:bg-indigo-100/70 active:scale-[0.98] dark:border-indigo-500/20 dark:bg-white/[0.04] dark:text-slate-200"
+                onClick={() => onSubmitNaturalInput(phrase.text, 'auto')}
+                className="flex min-h-[46px] items-center justify-between rounded-2xl border border-indigo-100 bg-indigo-50/60 px-4 py-2 text-left text-sm font-bold text-slate-800 transition hover:border-indigo-300 hover:bg-indigo-100/70 active:scale-[0.98] dark:border-indigo-500/20 dark:bg-white/[0.04] dark:text-slate-200"
               >
-                <span>“{phrase}”</span>
+                <span>“{phrase.text}”</span>
               </button>
             ))}
           </div>
@@ -228,11 +359,11 @@ export function SeniorModeView({
         <button
           type="button"
           onClick={() => setShowKeyboard((v) => !v)}
-          className="flex min-h-[52px] w-full items-center justify-center gap-2.5 rounded-2xl border-2 border-indigo-200 bg-slate-50 px-5 text-sm font-extrabold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-500/30 dark:bg-slate-800/80 dark:text-indigo-200 sm:text-base"
+          className="flex min-h-[50px] w-full items-center justify-center gap-2.5 rounded-2xl border-2 border-indigo-200 bg-slate-50 px-5 text-sm font-extrabold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-500/30 dark:bg-slate-800/80 dark:text-indigo-200"
         >
           <Keyboard className="h-5 w-5 shrink-0" />
           <span>
-            {showKeyboard ? 'Đóng bàn phím nhập nhanh' : 'Nhập bằng bàn phím & Mệnh giá'}
+            {showKeyboard ? 'Đóng bảng chọn mệnh giá' : 'Chọn nhanh món + Mệnh giá tiền'}
           </span>
         </button>
 
@@ -253,13 +384,13 @@ export function SeniorModeView({
                     : 'text-slate-600 dark:text-slate-300'
                 }`}
               >
-                Chi tiêu
+                − Chi tiêu (Tiền trừ)
               </button>
               <button
                 type="button"
                 onClick={() => {
                   setManualType('income');
-                  setManualItem('Nhận lương / Thù lao');
+                  setManualItem('Mẹ cho / Nhận tiền');
                 }}
                 className={`h-10 rounded-xl text-xs font-extrabold transition ${
                   manualType === 'income'
@@ -267,7 +398,7 @@ export function SeniorModeView({
                     : 'text-slate-600 dark:text-slate-300'
                 }`}
               >
-                Thu nhập
+                + Thu nhập (Tiền cộng)
               </button>
             </div>
 
@@ -282,14 +413,16 @@ export function SeniorModeView({
                   'Đổ xăng di chuyển',
                   'Đóng tiền điện nước',
                   'Mua sắm cá nhân',
-                  'Nhận lương / Thưởng',
+                  'Nhận lương / Được cho',
                 ].map((preset) => (
                   <button
                     key={preset}
                     type="button"
                     onClick={() => {
                       setManualItem(preset);
-                      if (preset.includes('lương')) setManualType('income');
+                      if (preset.includes('lương') || preset.includes('cho')) {
+                        setManualType('income');
+                      }
                     }}
                     className={`rounded-xl border px-3 py-1.5 text-xs font-extrabold transition ${
                       manualItem === preset

@@ -227,39 +227,60 @@ function hasKeyword(text: string, keywords: string[]): boolean {
   return keywords.some((kw) => padded.includes(` ${kw.toLowerCase()} `));
 }
 
+// Patterns where someone gives/sends/repays money TO the user (Income / Tiền cộng)
+const GIVER_TO_USER_INCOME_REGEX =
+  /(?:^|[\s,])(?:mẹ|me|bố|bo|ba|má|ma|tía|ông|bà|ông bà|bố mẹ|ba mẹ|anh|chị|em|cô|chú|bác|dì|dượng|cậu|mợ|gia đình|vợ|chồng|người yêu|ny|bạn|sếp|công ty|khách|trường)\s+(?:vừa\s+|mới\s+|đã\s+)?(?:cho|gửi|gui|chuyển|chuyen|ck|biếu|tặng|lì xì|thưởng|trả|tra|phát|hoàn)/i;
+
+const EXPLICIT_INCOME_PREFIX_REGEX =
+  /(?:^|\s)(?:\+\s*\d|cộng\s+(?:tiền\s+)?\d|thu\s+(?:tiền\s+)?\d|tiền\s+cộng|tiền\s+vào|được\s+(?:cho|biếu|tặng|lì xì|thưởng|trả|cộng)|nhận\s+\d)/i;
+
 /**
  * Infers categorySlug and transaction type ('expense' | 'income') from Vietnamese description.
+ * Distinguishes clearly between "mẹ cho 75k" (income +) vs "mua thuốc cho mẹ 300k" / "biếu mẹ 500k" (expense -).
  */
 export function classifyVietnameseCategory(text: string): {
   categorySlug: CategorySlug;
   type: TransactionType;
 } {
-  // 1. Income keywords (check explicit income phrases first)
+  const trimmed = text.trim();
+
+  // Check explicit spending verbs that take precedence over ambiguous phrases unless clearly giver-to-user
+  const isGivingToOthersExpense =
+    /^(?:cho\s+(?:con|em|cháu|bạn|mẹ|bố|vay|mượn)|biếu\s+(?:bố|mẹ|ông|bà)|tặng\s+|gửi\s+(?:tiền\s+)?(?:cho|về|mẹ|bố)|mừng\s+|trả\s+nợ\s+(?:ngân hàng|thẻ|bạn))/i.test(
+      trimmed
+    );
+
+  // 1. Income keywords & Vietnamese subject-verb giver patterns ("mẹ cho 75k", "bố gửi 1tr", "cộng 75k", ...)
   if (
-    hasKeyword(text, [
-      'lương',
-      'luong',
-      'thưởng',
-      'thuong',
-      'học bổng',
-      'hoc bong',
-      'trợ cấp',
-      'tro cap',
-      'thu nhập',
-      'thu nhap',
-      'nhận tiền',
-      'nhan tien',
-      'nhận được',
-      'được cho',
-      'bán hàng',
-      'hoàn tiền',
-      'cashback',
-      'thù lao',
-      'thu lao',
-      'freelance',
-      'lãi tiết kiệm',
-      'cổ tức',
-    ])
+    !isGivingToOthersExpense &&
+    (GIVER_TO_USER_INCOME_REGEX.test(trimmed) ||
+      EXPLICIT_INCOME_PREFIX_REGEX.test(trimmed) ||
+      hasKeyword(trimmed, [
+        'lương',
+        'luong',
+        'thưởng',
+        'thuong',
+        'học bổng',
+        'hoc bong',
+        'trợ cấp',
+        'tro cap',
+        'thu nhập',
+        'thu nhap',
+        'nhận tiền',
+        'nhan tien',
+        'nhận được',
+        'được cho',
+        'bán hàng',
+        'hoàn tiền',
+        'cashback',
+        'thù lao',
+        'thu lao',
+        'freelance',
+        'lãi tiết kiệm',
+        'cổ tức',
+        'tiền cộng',
+        'tiền vào',
+      ]))
   ) {
     return { categorySlug: 'thu-nhap', type: 'income' };
   }
@@ -475,6 +496,14 @@ export function classifyVietnameseCategory(text: string): {
       'bố mẹ',
       'ông bà',
       'con cái',
+      'biếu mẹ',
+      'biếu bố',
+      'biếu ông',
+      'biếu bà',
+      'gửi mẹ',
+      'gửi bố',
+      'cho con',
+      'cho cháu',
       'mừng đám cưới',
       'đám cưới',
       'đám giỗ',
@@ -559,8 +588,13 @@ function cleanClauseDescription(rawClause: string, matchedMoneyText: string): st
 
 /**
  * Main local Vietnamese NLP parser (< 1ms execution) that supports single & multi-transaction utterances.
+ * Accepts optional forcedType ('auto' | 'expense' | 'income') when user explicitly picks Chi tiêu or Thu nhập.
  */
-export function parseVietnameseExpenseText(rawText: string, nowIso?: string): ParsedExpenseItem[] {
+export function parseVietnameseExpenseText(
+  rawText: string,
+  nowIso?: string,
+  forcedType: 'auto' | TransactionType = 'auto'
+): ParsedExpenseItem[] {
   const timestamp = nowIso || new Date().toISOString();
   const normalized = normalizeVietnameseSpokenNumbers(rawText);
   const matches = extractVietnameseAmounts(normalized);
@@ -588,7 +622,18 @@ export function parseVietnameseExpenseText(rawText: string, nowIso?: string): Pa
     }
 
     const description = cleanClauseDescription(segment, current.rawMatch);
-    const { categorySlug, type } = classifyVietnameseCategory(description + ' ' + segment);
+    let { categorySlug, type } = classifyVietnameseCategory(description + ' ' + segment);
+
+    if (forcedType === 'income') {
+      type = 'income';
+      categorySlug = 'thu-nhap';
+    } else if (forcedType === 'expense') {
+      type = 'expense';
+      if (categorySlug === 'thu-nhap') {
+        categorySlug = 'khac';
+      }
+    }
+
     const spokenConfirmationVi = buildSpokenConfirmationVi(
       current.amount,
       description,

@@ -42,7 +42,10 @@ interface StandardModeViewProps {
   wallets: Wallet[];
   onSelectWallet: (walletId: string) => void;
   transactions: FinanceTransaction[];
-  onSubmitNaturalInput: (text: string) => Promise<void>;
+  onSubmitNaturalInput: (
+    text: string,
+    forcedType?: 'auto' | TransactionType
+  ) => Promise<void>;
   onOpenVoiceSheet: () => void;
   onAddManualTransaction: (params: {
     type: TransactionType;
@@ -125,6 +128,7 @@ export function StandardModeView({
   onChangeMobileTab,
 }: StandardModeViewProps) {
   const [omnibarText, setOmnibarText] = useState('');
+  const [omnibarTypeMode, setOmnibarTypeMode] = useState<'auto' | TransactionType>('auto');
   const [hideBalance, setHideBalance] = useState(false);
 
   // Filters
@@ -160,15 +164,16 @@ export function StandardModeView({
   // Instant 0ms preview while user types into omnibar
   const liveOmnibarPreview = useMemo(() => {
     if (!omnibarText.trim()) return [];
-    return parseVietnameseExpenseText(omnibarText.trim());
-  }, [omnibarText]);
+    return parseVietnameseExpenseText(omnibarText.trim(), undefined, omnibarTypeMode);
+  }, [omnibarText, omnibarTypeMode]);
 
   const handleOmnibarSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!omnibarText.trim() || isParsing) return;
     const text = omnibarText.trim();
+    const chosenType = omnibarTypeMode;
     setOmnibarText('');
-    await onSubmitNaturalInput(text);
+    await onSubmitNaturalInput(text, chosenType);
   };
 
   const handleManualSubmit = async (e: React.FormEvent) => {
@@ -496,26 +501,53 @@ export function StandardModeView({
             </div>
           </form>
 
-          {/* 0ms Live On-Device Preview Chip when typing */}
-          {liveOmnibarPreview.length > 0 && (
-            <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] font-bold text-emerald-600">
-                Nhận diện tức thì:
-              </span>
-              {liveOmnibarPreview.map((item, idx) => (
-                <span
-                  key={idx}
-                  className="inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50/80 px-2.5 py-0.5 text-[11px] font-bold text-slate-800 dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200"
+          {/* 0ms Live On-Device Preview + Explicit [ Tự động | − Chi | + Thu ] Switch */}
+          <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+            <div className="inline-flex rounded-xl border border-indigo-100 bg-slate-100/90 p-0.5 dark:border-white/10 dark:bg-slate-900">
+              {(
+                [
+                  { id: 'auto', label: 'Tự động AI', activeCls: 'bg-indigo-600 text-white' },
+                  { id: 'expense', label: '− Chi tiêu', activeCls: 'bg-rose-600 text-white' },
+                  { id: 'income', label: '+ Thu nhập', activeCls: 'bg-emerald-600 text-white' },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setOmnibarTypeMode(opt.id)}
+                  className={`rounded-lg px-2.5 py-1 text-[11px] font-extrabold transition ${
+                    omnibarTypeMode === opt.id
+                      ? `${opt.activeCls} shadow-2xs`
+                      : 'text-slate-600 hover:text-indigo-600 dark:text-slate-300'
+                  }`}
                 >
-                  <span>{item.description}</span>
-                  <span>·</span>
-                  <span className="font-mono text-emerald-700 dark:text-emerald-300">
-                    {formatVndNumber(item.amount)}₫
-                  </span>
-                </span>
+                  {opt.label}
+                </button>
               ))}
             </div>
-          )}
+
+            {liveOmnibarPreview.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {liveOmnibarPreview.map((item, idx) => (
+                  <span
+                    key={idx}
+                    className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-0.5 text-[11px] font-extrabold ${
+                      item.type === 'income'
+                        ? 'border-emerald-200 bg-emerald-50/90 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-950/50 dark:text-emerald-200'
+                        : 'border-rose-200 bg-rose-50/90 text-rose-800 dark:border-rose-500/30 dark:bg-rose-950/50 dark:text-rose-200'
+                    }`}
+                  >
+                    <span>{item.description}</span>
+                    <span>·</span>
+                    <span className="font-mono">
+                      {item.type === 'income' ? '+' : '−'}
+                      {formatVndNumber(item.amount)}₫
+                    </span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Horizontal Scrollable Sample Utterance Chips (mobile friendly) */}
           <div className="mt-2.5 flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">

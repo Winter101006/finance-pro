@@ -13,19 +13,23 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CATEGORY_BY_SLUG } from '@/data/categories';
 import { formatVndNumber, parseVietnameseExpenseText } from '@/lib/vietnameseParser';
+import type { TransactionType } from '@/types/finance';
 
 interface VoiceRecorderSheetProps {
   open: boolean;
   onClose: () => void;
-  onSubmitTranscript: (text: string) => Promise<void>;
+  onSubmitTranscript: (
+    text: string,
+    forcedType?: 'auto' | TransactionType
+  ) => Promise<void>;
   isSubmitting: boolean;
 }
 
 const QUICK_VOICE_SAMPLES = [
+  'Mẹ cho 75k',
   'Ăn phở bò 50k',
   'Đổ xăng 70 nghìn',
   'Sáng mua rau 35k với thịt bò 1 trăm rưỡi',
-  'Nhận lương 12 triệu',
 ];
 
 export function VoiceRecorderSheet({
@@ -37,6 +41,7 @@ export function VoiceRecorderSheet({
   const [status, setStatus] = useState<'listening' | 'paused' | 'unsupported'>('listening');
   const [finalTranscript, setFinalTranscript] = useState('');
   const [interimTranscript, setInterimTranscript] = useState('');
+  const [forcedType, setForcedType] = useState<'auto' | TransactionType>('auto');
   const [isSpeakingNow, setIsSpeakingNow] = useState(false);
   const [voiceLevelPct, setVoiceLevelPct] = useState(0);
   const [autoSendCountdown, setAutoSendCountdown] = useState<number | null>(null);
@@ -52,11 +57,15 @@ export function VoiceRecorderSheet({
     abort?: () => void;
   } | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const targetAmplitudeRef = useRef(0.12);
-  const currentAmplitudeRef = useRef(0.12);
+
+  // Physics state for true static-when-silent -> volume-proportional motion
+  const targetAmplitudeRef = useRef(0);
+  const currentAmplitudeRef = useRef(0);
+  const fallbackPulseRef = useRef(0);
   const phaseRef = useRef(0);
   const mountedRef = useRef(true);
   const latestFullTextRef = useRef('');
+  const latestForcedTypeRef = useRef<'auto' | TransactionType>('auto');
 
   const fullTranscript = useMemo(
     () => `${finalTranscript} ${interimTranscript}`.replace(/\s+/g, ' ').trim(),
@@ -67,11 +76,15 @@ export function VoiceRecorderSheet({
     latestFullTextRef.current = fullTranscript;
   }, [fullTranscript]);
 
-  // 0ms Instant On-Device Preview using our Vietnamese NLP engine
+  useEffect(() => {
+    latestForcedTypeRef.current = forcedType;
+  }, [forcedType]);
+
+  // 0ms Instant On-Device Preview
   const instantPreviewItems = useMemo(() => {
     if (!fullTranscript) return [];
-    return parseVietnameseExpenseText(fullTranscript);
-  }, [fullTranscript]);
+    return parseVietnameseExpenseText(fullTranscript, undefined, forcedType);
+  }, [fullTranscript, forcedType]);
 
   const stopAllAudioAndRecognition = useCallback(() => {
     if (silenceTimerRef.current) {
@@ -110,24 +123,27 @@ export function VoiceRecorderSheet({
       audioCtxRef.current = null;
     }
     analyserRef.current = null;
+    targetAmplitudeRef.current = 0;
+    currentAmplitudeRef.current = 0;
+    fallbackPulseRef.current = 0;
   }, []);
 
   const handleConfirmSend = useCallback(
     async (overrideText?: string) => {
       const textToSend = (overrideText ?? latestFullTextRef.current).trim();
+      const chosenType = latestForcedTypeRef.current;
       if (!textToSend || isSubmitting) return;
       stopAllAudioAndRecognition();
       onClose();
-      await onSubmitTranscript(textToSend);
+      await onSubmitTranscript(textToSend, chosenType);
     },
     [isSubmitting, onClose, onSubmitTranscript, stopAllAudioAndRecognition]
   );
 
-  // Start fluid 60fps canvas waveform loop + real microphone analyser
+  // Start fluid 60fps canvas waveform loop: STRICTLY STILL/FLAT when silent, scales dynamically with speech volume
   const startWaveformAndAudio = useCallback(async () => {
     if (typeof window === 'undefined') return;
 
-    // Initialize Microphone Analyser if available
     try {
       if (navigator.mediaDevices?.getUserMedia) {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -150,20 +166,23 @@ export function VoiceRecorderSheet({
           const ctx = new AudioCtx();
           const source = ctx.createMediaStreamSource(stream);
           const analyser = ctx.createAnalyser();
-          analyser.fftSize = 256;
-          analyser.smoothingTimeConstant = 0.72;
+          analyser.fftSize = 512;
+          analyser.smoothingTimeConstant = 0.65;
           source.connect(analyser);
           audioCtxRef.current = ctx;
           analyserRef.current = analyser;
         }
       }
     } catch {
-      // If user denied mic permission or OS mic unavailable, fallback smoothly to speech events wave
+      // If browser blocks direct mic stream, keep line static unless speech tokens arrive
     }
 
-    const freqData = new Uint8Array(128);
+    const timeData = new Uint8Array(512);
+    let ambientNoiseFloor = 0.014;
+    let calibratedFrames = 0;
+    let lastUiUpdateMs = 0;
 
-    const drawFrame = () => {
+    const drawFrame = (nowMs: number) => {
       const canvas = canvasRef.current;
       if (!canvas) {
         rafRef.current = requestAnimationFrame(drawFrame);
@@ -172,7 +191,7 @@ export function VoiceRecorderSheet({
 
       const dpr = window.devicePixelRatio || 1;
       const width = canvas.clientWidth || 320;
-      const height = canvas.clientHeight || 110;
+      const height = canvas.clientHeight || 104;
       if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
         canvas.width = width * dpr;
         canvas.height = height * dpr;
@@ -185,94 +204,150 @@ export function VoiceRecorderSheet({
       ctx.scale(dpr, dpr);
       ctx.clearRect(0, 0, width, height);
 
-      // Compute real-time voice amplitude from AnalyserNode
-      let measuredLevel = 0;
+      // Measure real acoustic PCM RMS when microphone stream is active
       if (analyserRef.current) {
-        analyserRef.current.getByteFrequencyData(freqData);
-        let sum = 0;
-        // Focus on human voice frequencies (bins 2..48)
-        for (let i = 2; i < 48; i++) {
-          sum += freqData[i];
+        analyserRef.current.getByteTimeDomainData(timeData);
+        let sumSq = 0;
+        for (let i = 0; i < timeData.length; i++) {
+          const sample = (timeData[i] - 128) / 128;
+          sumSq += sample * sample;
         }
-        const avg = sum / 46;
-        measuredLevel = Math.min(1, avg / 75);
-        targetAmplitudeRef.current = 0.14 + measuredLevel * 0.95;
+        const rms = Math.sqrt(sumSq / timeData.length);
 
-        const speaking = measuredLevel > 0.12;
-        setIsSpeakingNow(speaking);
-        setVoiceLevelPct(Math.round(measuredLevel * 100));
+        // Adaptive noise floor over initial ~18 silent frames, only drifting down or slightly when quiet
+        if (calibratedFrames < 18) {
+          ambientNoiseFloor = ambientNoiseFloor * 0.8 + rms * 0.2;
+          calibratedFrames++;
+        } else if (rms < ambientNoiseFloor * 1.15) {
+          ambientNoiseFloor = ambientNoiseFloor * 0.96 + rms * 0.04;
+        }
+
+        const noiseGate = Math.max(0.018, ambientNoiseFloor * 1.55);
+
+        if (rms <= noiseGate) {
+          // SILENCE: strict 0 amplitude -> static flat line
+          targetAmplitudeRef.current = 0;
+          if (nowMs - lastUiUpdateMs > 120) {
+            setIsSpeakingNow(false);
+            setVoiceLevelPct(0);
+            lastUiUpdateMs = nowMs;
+          }
+        } else {
+          // SPEAKING: soft voice -> small ripple; loud voice -> big wave!
+          const excess = Math.min(1, (rms - noiseGate) / 0.12);
+          const scaled = Math.pow(excess, 0.78);
+          targetAmplitudeRef.current = Math.min(1, 0.1 + scaled * 0.9);
+          if (nowMs - lastUiUpdateMs > 90) {
+            setIsSpeakingNow(true);
+            setVoiceLevelPct(Math.max(8, Math.min(100, Math.round(targetAmplitudeRef.current * 100))));
+            lastUiUpdateMs = nowMs;
+          }
+        }
       } else {
-        // Gentle idle breathing wave when mic analyser is unavailable
-        targetAmplitudeRef.current = status === 'listening' ? 0.25 : 0.08;
+        // Without analyser stream: stay STRICTLY FLAT (0) unless SpeechRecognition emitted live words
+        targetAmplitudeRef.current = fallbackPulseRef.current;
+        fallbackPulseRef.current *= 0.88;
+        if (fallbackPulseRef.current < 0.01) {
+          fallbackPulseRef.current = 0;
+          if (nowMs - lastUiUpdateMs > 150) {
+            setIsSpeakingNow(false);
+            setVoiceLevelPct(0);
+            lastUiUpdateMs = nowMs;
+          }
+        }
       }
 
-      // Smooth spring interpolation for silky organic motion
-      currentAmplitudeRef.current +=
-        (targetAmplitudeRef.current - currentAmplitudeRef.current) * 0.22;
+      // Asymmetric spring interpolation: fast attack when speaking, clean settle back to 0 when silent
+      const target = targetAmplitudeRef.current;
+      const rate = target > currentAmplitudeRef.current ? 0.36 : 0.18;
+      currentAmplitudeRef.current += (target - currentAmplitudeRef.current) * rate;
+      if (target === 0 && currentAmplitudeRef.current < 0.006) {
+        currentAmplitudeRef.current = 0;
+      }
+
       const amp = currentAmplitudeRef.current;
-      phaseRef.current += 0.065 + amp * 0.09;
-
       const centerY = height / 2;
-      const maxWaveH = height * 0.42;
 
-      const layers = [
-        {
-          color: 'rgba(56, 189, 248, 0.45)',
-          lineWidth: 2.5,
-          freq: 1.8,
-          phaseOffset: 0,
-          scale: 0.72,
-        },
-        {
-          color: 'rgba(139, 92, 246, 0.55)',
-          lineWidth: 3,
-          freq: 2.4,
-          phaseOffset: 1.6,
-          scale: 0.88,
-        },
-        {
-          color: '#4F46E5',
-          lineWidth: 3.5,
-          freq: 2.0,
-          phaseOffset: 3.1,
-          scale: 1.0,
-        },
-      ];
-
-      for (const layer of layers) {
+      if (amp <= 0.001) {
+        // STATIC MODE (Chế độ tĩnh hoàn toàn khi không nói)
+        const staticGrad = ctx.createLinearGradient(0, 0, width, 0);
+        staticGrad.addColorStop(0, 'rgba(99, 102, 241, 0.12)');
+        staticGrad.addColorStop(0.5, 'rgba(99, 102, 241, 0.5)');
+        staticGrad.addColorStop(1, 'rgba(99, 102, 241, 0.12)');
         ctx.beginPath();
-        const gradient = ctx.createLinearGradient(0, 0, width, 0);
-        gradient.addColorStop(0, 'rgba(37, 99, 235, 0.2)');
-        gradient.addColorStop(0.25, '#2563EB');
-        gradient.addColorStop(0.5, '#6366F1');
-        gradient.addColorStop(0.75, '#9333EA');
-        gradient.addColorStop(1, 'rgba(147, 51, 234, 0.2)');
-
-        ctx.strokeStyle = layer.scale === 1 ? gradient : layer.color;
-        ctx.lineWidth = layer.lineWidth;
+        ctx.moveTo(12, centerY);
+        ctx.lineTo(width - 12, centerY);
+        ctx.strokeStyle = staticGrad;
+        ctx.lineWidth = 2.5;
         ctx.lineCap = 'round';
-
-        const step = 4;
-        for (let x = 0; x <= width; x += step) {
-          const normX = x / width;
-          // Hanning envelope tapers edges smoothly to zero
-          const envelope = Math.sin(normX * Math.PI);
-          const harmonic1 = Math.sin(
-            normX * Math.PI * 2 * layer.freq + phaseRef.current + layer.phaseOffset
-          );
-          const harmonic2 =
-            0.45 *
-            Math.cos(
-              normX * Math.PI * 3.7 - phaseRef.current * 1.3 + layer.phaseOffset
-            );
-          const y =
-            centerY +
-            (harmonic1 + harmonic2) * maxWaveH * amp * layer.scale * envelope;
-
-          if (x === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        }
         ctx.stroke();
+      } else {
+        // ACTIVE SPEAKING WAVEFORM (Rung động tỷ lệ đúng theo độ to nhỏ giọng nói)
+        phaseRef.current += 0.055 + amp * 0.13;
+        const maxWaveH = height * 0.43;
+
+        const layers = [
+          {
+            color: 'rgba(56, 189, 248, 0.45)',
+            lineWidth: 2.2,
+            freq: 2.0,
+            phaseOffset: 0,
+            scale: 0.65,
+          },
+          {
+            color: 'rgba(139, 92, 246, 0.55)',
+            lineWidth: 2.8,
+            freq: 2.6,
+            phaseOffset: 1.5,
+            scale: 0.85,
+          },
+          {
+            color: 'gradient',
+            lineWidth: 3.4,
+            freq: 2.2,
+            phaseOffset: 3.0,
+            scale: 1.0,
+          },
+        ];
+
+        for (const layer of layers) {
+          ctx.beginPath();
+          if (layer.color === 'gradient') {
+            const gradient = ctx.createLinearGradient(0, 0, width, 0);
+            gradient.addColorStop(0, 'rgba(37, 99, 235, 0.18)');
+            gradient.addColorStop(0.25, '#2563EB');
+            gradient.addColorStop(0.5, '#6366F1');
+            gradient.addColorStop(0.75, '#9333EA');
+            gradient.addColorStop(1, 'rgba(147, 51, 234, 0.18)');
+            ctx.strokeStyle = gradient;
+          } else {
+            ctx.strokeStyle = layer.color;
+          }
+
+          ctx.lineWidth = layer.lineWidth;
+          ctx.lineCap = 'round';
+
+          const step = 3;
+          for (let x = 0; x <= width; x += step) {
+            const normX = x / width;
+            const envelope = Math.pow(Math.sin(normX * Math.PI), 1.2);
+            const harmonic1 = Math.sin(
+              normX * Math.PI * 2 * layer.freq + phaseRef.current + layer.phaseOffset
+            );
+            const harmonic2 =
+              0.42 *
+              Math.cos(
+                normX * Math.PI * 3.8 - phaseRef.current * 1.25 + layer.phaseOffset
+              );
+            const y =
+              centerY +
+              (harmonic1 + harmonic2) * maxWaveH * amp * layer.scale * envelope;
+
+            if (x === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
       }
 
       ctx.restore();
@@ -280,9 +355,9 @@ export function VoiceRecorderSheet({
     };
 
     rafRef.current = requestAnimationFrame(drawFrame);
-  }, [status]);
+  }, []);
 
-  // Start Web Speech API (vi-VN) with interimResults = true for 0ms real-time words
+  // Start Web Speech API (vi-VN) with interimResults = true
   const startSpeechRecognition = useCallback(() => {
     if (typeof window === 'undefined') return;
     const SpeechRec =
@@ -292,7 +367,7 @@ export function VoiceRecorderSheet({
     if (!SpeechRec) {
       setStatus('unsupported');
       setMicErrorMsg(
-        'Trình duyệt hiện tại chưa hỗ trợ nhận diện giọng nói tự động. Bạn hãy bấm câu mẫu bên dưới hoặc dùng Google Chrome / Safari.'
+        'Trình duyệt hiện tại chưa hỗ trợ nhận diện giọng nói tự động. Bạn hãy bấm câu mẫu bên dưới hoặc dùng ô nhắn tin nhanh.'
       );
       return;
     }
@@ -342,16 +417,19 @@ export function VoiceRecorderSheet({
         accumulatedFinal = rebuiltFinal;
         setFinalTranscript(rebuiltFinal);
         setInterimTranscript(liveInterim);
-        // Pulse wave immediately on speech token even if analyser is muted
-        targetAmplitudeRef.current = Math.max(targetAmplitudeRef.current, 0.78);
-        setIsSpeakingNow(true);
+        // If no direct WebAudio stream, trigger transient speech pulse ONLY during actual recognized words
+        if (!analyserRef.current) {
+          fallbackPulseRef.current = 0.65;
+          setIsSpeakingNow(true);
+          setVoiceLevelPct(55);
+        }
       };
 
       recognition.onerror = (ev) => {
         if (ev?.error === 'not-allowed' || ev?.error === 'service-not-allowed') {
           setStatus('paused');
           setMicErrorMsg(
-            'Bạn chưa cấp quyền Micro cho trình duyệt. Hãy bật quyền Micro trên thanh địa chỉ hoặc chọn câu mẫu bên dưới.'
+            'Bạn chưa cấp quyền Micro cho trình duyệt. Hãy bật Micro trên thanh địa chỉ hoặc dùng ô nhắn tin nhanh.'
           );
         }
       };
@@ -367,7 +445,6 @@ export function VoiceRecorderSheet({
     }
   }, []);
 
-  // Lifecycle when sheet opens/closes
   useEffect(() => {
     mountedRef.current = true;
     if (!open) {
@@ -377,6 +454,7 @@ export function VoiceRecorderSheet({
 
     setFinalTranscript('');
     setInterimTranscript('');
+    setForcedType('auto');
     setAutoSendCountdown(null);
     setMicErrorMsg(null);
     setIsSpeakingNow(false);
@@ -391,7 +469,7 @@ export function VoiceRecorderSheet({
     };
   }, [open, startSpeechRecognition, startWaveformAndAudio, stopAllAudioAndRecognition]);
 
-  // Smart low-delay auto-submit countdown when user finishes speaking a valid amount
+  // Auto-submit countdown after user stops speaking a valid transaction
   useEffect(() => {
     if (!open || status !== 'listening' || instantPreviewItems.length === 0) {
       if (silenceTimerRef.current) {
@@ -402,7 +480,6 @@ export function VoiceRecorderSheet({
       return;
     }
 
-    // Reset 1.5s countdown whenever transcript changes
     let remainingMs = 1500;
     setAutoSendCountdown(remainingMs);
     if (silenceTimerRef.current) clearInterval(silenceTimerRef.current);
@@ -427,10 +504,18 @@ export function VoiceRecorderSheet({
 
   if (!open) return null;
 
+  const loudnessLabel =
+    voiceLevelPct === 0
+      ? 'Yên tĩnh (Sóng đang đứng yên)'
+      : voiceLevelPct < 35
+      ? `Nói nhỏ (${voiceLevelPct}%)`
+      : voiceLevelPct < 70
+      ? `Nói vừa rõ (${voiceLevelPct}%)`
+      : `Nói to rõ nét (${voiceLevelPct}%)`;
+
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 backdrop-blur-sm sm:items-center sm:p-4">
       <div className="w-full max-w-lg overflow-hidden rounded-t-3xl border border-indigo-200/80 bg-white p-5 pb-safe shadow-[0_-12px_50px_rgba(79,70,229,0.25)] dark:border-indigo-500/30 dark:bg-[#111829] sm:rounded-3xl sm:p-6">
-        {/* Mobile Grabber Handle */}
         <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-200 dark:bg-slate-700 sm:hidden" />
 
         {/* Header */}
@@ -451,7 +536,7 @@ export function VoiceRecorderSheet({
             </div>
             <div>
               <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
-                Trợ lý Giọng nói Gemini AI
+                Trợ lý Giọng nói Thông minh
               </h3>
               <div className="flex items-center gap-1.5 text-[11px] font-bold">
                 <span
@@ -459,7 +544,7 @@ export function VoiceRecorderSheet({
                     status === 'listening'
                       ? isSpeakingNow
                         ? 'animate-ping bg-emerald-500'
-                        : 'bg-sky-500'
+                        : 'bg-slate-400'
                       : 'bg-amber-500'
                   }`}
                 />
@@ -470,11 +555,7 @@ export function VoiceRecorderSheet({
                       : 'text-slate-500 dark:text-slate-400'
                   }
                 >
-                  {status === 'listening'
-                    ? isSpeakingNow
-                      ? `Đang thu âm rõ nét (${voiceLevelPct}%)`
-                      : 'Đang bật Mic · Mời bạn nói...'
-                    : 'Đã tạm dừng nghe'}
+                  {status === 'listening' ? loudnessLabel : 'Đã tạm dừng nghe'}
                 </span>
               </div>
             </div>
@@ -493,24 +574,47 @@ export function VoiceRecorderSheet({
           </button>
         </div>
 
-        {/* FLUID 60FPS WAVEFORM CANVAS */}
-        <div className="relative mt-4 overflow-hidden rounded-3xl border border-indigo-100 bg-gradient-to-b from-slate-50/90 to-indigo-50/50 p-3 dark:border-indigo-500/20 dark:from-[#0B1020] dark:to-[#131B2E]">
+        {/* FLUID WAVEFORM CANVAS (FLAT LINE WHEN SILENT, DYNAMIC AMPLITUDE WHEN SPEAKING) */}
+        <div className="relative mt-4 overflow-hidden rounded-3xl border border-indigo-100 bg-gradient-to-b from-slate-50/90 to-indigo-50/40 p-3 dark:border-indigo-500/20 dark:from-[#0B1020] dark:to-[#131B2E]">
           <canvas
             ref={canvasRef}
-            className="h-[104px] w-full"
+            className="h-[100px] w-full"
             aria-label="Sóng âm thanh trực tiếp"
           />
           <div className="mt-1 flex items-center justify-between px-2 text-[10px] font-bold text-slate-400">
-            <span>{isSpeakingNow ? 'Nhận thấy giọng nói' : 'Sẵn sàng thu âm tiếng Việt'}</span>
+            <span>{isSpeakingNow ? 'Đang rung theo giọng bạn' : 'Chế độ tĩnh · Mời bạn nói'}</span>
             {autoSendCountdown !== null && (
               <span className="text-indigo-600 dark:text-indigo-300">
-                Tự động lưu sau {(autoSendCountdown / 1000).toFixed(1)}s...
+                Tự lưu sau {(autoSendCountdown / 1000).toFixed(1)}s...
               </span>
             )}
           </div>
         </div>
 
-        {/* Error / Mic Hint */}
+        {/* Explicit Income / Expense Toggle for Voice */}
+        <div className="mt-3 grid grid-cols-3 rounded-2xl border border-indigo-100 bg-slate-100/90 p-1 dark:border-indigo-500/20 dark:bg-slate-900">
+          {(
+            [
+              { id: 'auto', label: 'Tự động AI', activeClass: 'bg-indigo-600 text-white' },
+              { id: 'expense', label: '− Chi tiêu', activeClass: 'bg-rose-600 text-white' },
+              { id: 'income', label: '+ Thu nhập', activeClass: 'bg-emerald-600 text-white' },
+            ] as const
+          ).map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setForcedType(opt.id)}
+              className={`h-8 rounded-xl text-[11px] font-extrabold transition ${
+                forcedType === opt.id
+                  ? `${opt.activeClass} shadow-xs`
+                  : 'text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
         {micErrorMsg && (
           <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs font-semibold text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-200">
             {micErrorMsg}
@@ -518,10 +622,10 @@ export function VoiceRecorderSheet({
         )}
 
         {/* LIVE STREAMING TRANSCRIPT & 0ms PREVIEW */}
-        <div className="mt-4 space-y-3">
-          <div className="min-h-[68px] rounded-2xl border border-indigo-100 bg-slate-50/80 p-3.5 dark:border-indigo-500/20 dark:bg-[#0B0F19]">
-            <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 mb-1">
-              Nội dung nhận diện trực tiếp:
+        <div className="mt-3 space-y-2.5">
+          <div className="min-h-[60px] rounded-2xl border border-indigo-100 bg-slate-50/80 p-3 dark:border-indigo-500/20 dark:bg-[#0B0F19]">
+            <div className="mb-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+              Nội dung nghe được:
             </div>
             {fullTranscript ? (
               <p className="text-base font-bold leading-snug text-slate-900 dark:text-white">
@@ -534,33 +638,31 @@ export function VoiceRecorderSheet({
               </p>
             ) : (
               <p className="text-sm font-medium italic text-slate-400">
-                Ví dụ: &ldquo;Ăn trưa 45 nghìn với đổ xăng 70k&rdquo;...
+                Ví dụ: &ldquo;Mẹ cho 75k&rdquo;, &ldquo;Ăn trưa 45 nghìn&rdquo;...
               </p>
             )}
           </div>
 
-          {/* 0ms Instant Preview Badges */}
           {instantPreviewItems.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 rounded-2xl border border-emerald-200 bg-emerald-50/80 p-3 dark:border-emerald-500/25 dark:bg-emerald-950/30">
+            <div className="flex flex-wrap gap-1.5 rounded-2xl border border-indigo-100 bg-indigo-50/50 p-2.5 dark:border-indigo-500/25 dark:bg-indigo-950/30">
               {instantPreviewItems.map((item, i) => {
                 const cat = CATEGORY_BY_SLUG[item.categorySlug] || CATEGORY_BY_SLUG['khac'];
                 return (
                   <span
                     key={i}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-white px-2.5 py-1 text-xs font-extrabold text-slate-800 shadow-2xs dark:bg-slate-900 dark:text-slate-100"
+                    className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-extrabold shadow-2xs ${
+                      item.type === 'income'
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-950/60 dark:text-emerald-200'
+                        : 'border-rose-200 bg-rose-50 text-rose-900 dark:border-rose-500/30 dark:bg-rose-950/60 dark:text-rose-200'
+                    }`}
                   >
-                    <Check className="h-3.5 w-3.5 text-emerald-600" />
+                    <Check className="h-3.5 w-3.5" />
                     <span>{item.description}:</span>
-                    <span
-                      className={
-                        item.type === 'income' ? 'text-emerald-600' : 'text-rose-600'
-                      }
-                    >
+                    <span className="font-mono">
+                      {item.type === 'income' ? '+' : '−'}
                       {formatVndNumber(item.amount)} ₫
                     </span>
-                    <span className="text-[10px] font-semibold text-slate-400">
-                      ({cat.name})
-                    </span>
+                    <span className="text-[10px] opacity-75">({cat.name})</span>
                   </span>
                 );
               })}
@@ -568,7 +670,7 @@ export function VoiceRecorderSheet({
           )}
         </div>
 
-        {/* Action Controls (Large Mobile-Friendly Touch Targets) */}
+        {/* Action Controls */}
         <div className="mt-4 flex items-center gap-2.5">
           <button
             type="button"
@@ -614,15 +716,15 @@ export function VoiceRecorderSheet({
             ) : (
               <Send className="h-4 w-4" />
             )}
-            <span>Lưu ngay (0s chờ)</span>
+            <span>Lưu ngay</span>
           </button>
         </div>
 
-        {/* Quick 1-Tap Simulation Samples (Great for silent testing or quick demos) */}
+        {/* Quick 1-Tap Simulation Samples */}
         <div className="mt-4 border-t border-slate-100 pt-3 dark:border-white/10">
-          <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-400 mb-2">
+          <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold text-slate-400">
             <Sparkles className="h-3 w-3 text-indigo-500" />
-            <span>Hoặc chạm 1 lần để thử nhanh không cần nói:</span>
+            <span>Hoặc chạm 1 lần để thử nhanh:</span>
           </div>
           <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
             {QUICK_VOICE_SAMPLES.map((sample) => (
