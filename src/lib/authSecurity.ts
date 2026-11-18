@@ -244,3 +244,31 @@ export async function verifySignedSessionToken(
     return null;
   }
 }
+
+export interface PasswordStrengthReport {
+  score: 0 | 1 | 2 | 3 | 4;
+  label: string;
+  color: string;
+}
+
+/**
+ * Evaluate password strength for visual feedback in Signup / Change Password screens
+ */
+export function evaluatePasswordStrength(rawPassword: string): PasswordStrengthReport {
+  const pwd = normalizePasswordInput(rawPassword);
+  if (!pwd || pwd.length < 6) {
+    return { score: pwd.length > 0 ? 1 : 0, label: 'Cần tối thiểu 6 ký tự', color: '#EF4444' };
+  }
+
+  let pts = 1;
+  if (pwd.length >= 8) pts++;
+  if (/[A-Z]/.test(pwd) && /[a-z]/.test(pwd)) pts++;
+  if (/\d/.test(pwd) && /[^A-Za-z0-9]/.test(pwd)) pts++;
+  else if (/\d/.test(pwd) && pwd.length >= 10) pts++;
+
+  const clamped = Math.min(4, Math.max(1, pts)) as 1 | 2 | 3 | 4;
+  if (clamped === 1) return { score: 1, label: 'Cơ bản (hãy thêm số hoặc chữ hoa)', color: '#F59E0B' };
+  if (clamped === 2) return { score: 2, label: 'Trung bình', color: '#0EA5E9' };
+  if (clamped === 3) return { score: 3, label: 'Khá mạnh', color: '#6366F1' };
+  return { score: 4, label: 'Rất mạnh', color: '#10B981' };
+}

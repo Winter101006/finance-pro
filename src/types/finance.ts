@@ -44,9 +44,18 @@ export interface UserProfile {
   displayName: string;
   roleLabel: string;
   avatarText: string;
+  avatarColor?: string;
   uiMode: UIMode;
   defaultWalletId: string;
   createdAt: string;
+}
+
+export interface AccountBackupPayload {
+  version: number;
+  exportedAt: string;
+  profile: UserProfile;
+  wallets: Wallet[];
+  transactions: FinanceTransaction[];
 }
 
 export interface FinanceTransaction {

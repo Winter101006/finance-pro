@@ -17,8 +17,9 @@ import {
   UserPlus,
   Zap,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { FinanceRepository } from '@/lib/dataAdapter';
+import { useEffect, useMemo, useState } from 'react';
+import { evaluatePasswordStrength } from '@/lib/authSecurity';
+import { AVATAR_COLOR_PRESETS, FinanceRepository } from '@/lib/dataAdapter';
 import type { UserProfile, Wallet as WalletType } from '@/types/finance';
 
 interface AuthScreenProps {
@@ -38,8 +39,13 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [savedAccounts, setSavedAccounts] = useState<
-    Array<Pick<UserProfile, 'id' | 'email' | 'displayName' | 'avatarText'>>
+    Array<Pick<UserProfile, 'id' | 'email' | 'displayName' | 'avatarText' | 'avatarColor'>>
   >([]);
+
+  const passwordStrength = useMemo(
+    () => evaluatePasswordStrength(password),
+    [password]
+  );
 
   useEffect(() => {
     const list = FinanceRepository.getSavedAccountsPreview();
@@ -86,110 +92,35 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   };
 
   return (
-    <div className="min-h-screen gemini-mesh-bg flex flex-col justify-between px-4 py-8 sm:px-6 lg:px-8">
+    <div className="min-h-screen gemini-mesh-bg flex flex-col justify-between px-4 py-5 sm:px-6 sm:py-8 lg:px-8">
       {/* Top Minimal Brand Header */}
       <div className="mx-auto flex w-full max-w-6xl items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-500/25">
+          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-500/25 sm:h-11 sm:w-11">
             <Sparkles className="h-5 w-5" />
           </div>
           <div>
-            <span className="text-xl font-extrabold tracking-tight bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text text-transparent">
+            <span className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text text-lg font-extrabold tracking-tight text-transparent sm:text-xl">
               Finance Pro
             </span>
-            <p className="text-xs font-medium text-slate-500">
-              Nền tảng Quản lý Tài chính Cá nhân Thông minh
+            <p className="text-[11px] font-medium text-slate-500 sm:text-xs">
+              Quản lý Tài chính Cá nhân Thông minh
             </p>
           </div>
         </div>
 
-        <div className="hidden sm:inline-flex items-center gap-2 rounded-full border border-indigo-200/80 bg-white/85 px-3.5 py-1.5 text-xs font-bold text-indigo-700 shadow-2xs backdrop-blur-md">
-          <ShieldCheck className="h-4 w-4 text-emerald-600" />
-          <span>Bảo mật PBKDF2-SHA256 · Dữ liệu độc lập từng tài khoản</span>
+        <div className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200/80 bg-white/85 px-3 py-1 text-[11px] font-bold text-indigo-700 shadow-2xs backdrop-blur-md sm:px-3.5 sm:py-1.5 sm:text-xs">
+          <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 sm:h-4 sm:w-4" />
+          <span className="hidden sm:inline">Bảo mật PBKDF2-SHA256 · Dữ liệu độc lập từng tài khoản</span>
+          <span className="sm:hidden">PBKDF2 Bảo mật</span>
         </div>
       </div>
 
-      {/* Main Split Portal */}
-      <div className="mx-auto my-auto grid w-full max-w-6xl grid-cols-1 gap-10 py-8 lg:grid-cols-12 lg:items-center">
-        {/* Left 6 Cols: Professional Personal Finance Value Proposition */}
-        <div className="space-y-6 lg:col-span-6 lg:pr-6">
-          <div className="inline-flex items-center gap-2 rounded-2xl border border-indigo-200 bg-indigo-50/90 px-3.5 py-1.5 text-xs font-extrabold text-indigo-700">
-            <Sparkles className="h-3.5 w-3.5" />
-            <span>Sổ Thu Chi Cá Nhân · Gemini AI</span>
-          </div>
-
-          <h1 className="text-3xl font-black tracking-tight text-slate-900 sm:text-4xl lg:text-[42px] lg:leading-[1.15]">
-            Kiểm soát dòng tiền cá nhân{' '}
-            <span className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text text-transparent">
-              nhanh, chuẩn và bảo mật.
-            </span>
-          </h1>
-
-          <p className="text-sm leading-relaxed text-slate-600 sm:text-base">
-            Mỗi tài khoản sở hữu không gian tài chính cá nhân riêng biệt, bắt đầu từ{' '}
-            <span className="font-bold text-slate-800">0 ₫</span>. Hỗ trợ bóc tách câu nói
-            tự nhiên tiếng Việt bằng AI hoặc nhập thủ công chi tiết, kèm 2 chế độ hiển thị
-            linh hoạt.
-          </p>
-
-          <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
-            <div className="rounded-3xl border border-indigo-100 bg-white/90 p-4 shadow-xs">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-500/10 text-blue-600">
-                <Sparkles className="h-5 w-5" />
-              </div>
-              <h3 className="mt-3 text-sm font-extrabold text-slate-900">
-                Nhập Liệu AI Tự Nhiên
-              </h3>
-              <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                Gõ hoặc nói một câu (&ldquo;ăn sáng 45k, đổ xăng 70k&rdquo;), hệ thống tự động
-                tách khoản và phân loại danh mục.
-              </p>
-            </div>
-
-            <div className="rounded-3xl border border-indigo-100 bg-white/90 p-4 shadow-xs">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-500/10 text-purple-600">
-                <Layers className="h-5 w-5" />
-              </div>
-              <h3 className="mt-3 text-sm font-extrabold text-slate-900">
-                2 Chế Độ Giao Diện
-              </h3>
-              <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                Chuyển đổi 1 chạm giữa <strong>Giao diện Chi tiết</strong> (biểu đồ, bộ lọc) và{' '}
-                <strong>Giao diện Đơn giản</strong> (nút lớn, thao tác nhanh).
-              </p>
-            </div>
-
-            <div className="rounded-3xl border border-indigo-100 bg-white/90 p-4 shadow-xs">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600">
-                <ShieldCheck className="h-5 w-5" />
-              </div>
-              <h3 className="mt-3 text-sm font-extrabold text-slate-900">
-                Mã Hóa Mật Khẩu Chuẩn
-              </h3>
-              <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                Mật khẩu được băm bằng thuật toán PBKDF2-HMAC-SHA256 kèm salt ngẫu nhiên và
-                phiên đăng nhập có chữ ký bảo vệ.
-              </p>
-            </div>
-
-            <div className="rounded-3xl border border-indigo-100 bg-white/90 p-4 shadow-xs">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600">
-                <Zap className="h-5 w-5" />
-              </div>
-              <h3 className="mt-3 text-sm font-extrabold text-slate-900">
-                Số Liệu Sạch 100%
-              </h3>
-              <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                Không chứa dữ liệu mẫu dư thừa. Chỉ thống kê và lưu trữ chính xác các giao dịch
-                của riêng bạn.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Right 6 Cols: Clean, Effortless Auth Card */}
-        <div className="lg:col-span-6">
-          <div className="mx-auto max-w-md rounded-3xl border border-indigo-200/80 bg-white p-6 shadow-[0_20px_60px_rgb(79,70,229,0.12)] sm:p-8">
+      {/* Main Split Portal (Auth card appears FIRST on Mobile, right side on Desktop) */}
+      <div className="mx-auto my-auto grid w-full max-w-6xl grid-cols-1 gap-8 py-6 lg:grid-cols-12 lg:items-center lg:gap-10">
+        {/* Auth Card (order-1 on mobile so phone users see Login immediately!) */}
+        <div className="order-1 lg:order-2 lg:col-span-6">
+          <div className="mx-auto max-w-md rounded-3xl border border-indigo-200/80 bg-white p-5 shadow-[0_20px_60px_rgb(79,70,229,0.12)] sm:p-8">
             {/* Segmented Mode Switcher: Sign In vs Sign Up */}
             <div className="grid grid-cols-2 rounded-2xl border border-indigo-100 bg-slate-100/90 p-1">
               <button
@@ -198,7 +129,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                   setMode('signin');
                   setErrorMsg(null);
                 }}
-                className={`flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-extrabold transition sm:text-sm ${
+                className={`flex min-h-[42px] items-center justify-center gap-2 rounded-xl text-xs font-extrabold transition sm:text-sm ${
                   mode === 'signin'
                     ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white shadow-sm'
                     : 'text-slate-600 hover:text-indigo-600'
@@ -214,7 +145,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                   setMode('signup');
                   setErrorMsg(null);
                 }}
-                className={`flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-extrabold transition sm:text-sm ${
+                className={`flex min-h-[42px] items-center justify-center gap-2 rounded-xl text-xs font-extrabold transition sm:text-sm ${
                   mode === 'signup'
                     ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white shadow-sm'
                     : 'text-slate-600 hover:text-indigo-600'
@@ -228,51 +159,67 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
             <div className="mt-5">
               <h2 className="text-xl font-extrabold text-slate-900">
                 {mode === 'signin'
-                  ? 'Đăng nhập tài khoản cá nhân'
+                  ? 'Chào mừng trở lại!'
                   : mode === 'signup'
                   ? 'Tạo tài khoản cá nhân mới'
                   : 'Đặt lại mật khẩu mới'}
               </h2>
               <p className="mt-1 text-xs text-slate-500">
                 {mode === 'signin'
-                  ? 'Nhập email và mật khẩu để truy cập sổ thu chi của bạn.'
+                  ? 'Đăng nhập để xem sổ thu chi và biểu đồ cá nhân của riêng bạn.'
                   : mode === 'signup'
-                  ? 'Chỉ cần 3 thông tin cơ bản để tạo ngay sổ thu chi cá nhân (0 ₫).'
-                  : 'Nhập email tài khoản và mật khẩu mới bạn muốn cập nhật.'}
+                  ? 'Chỉ cần 3 thông tin để khởi tạo ví cá nhân hoàn toàn sạch (0 ₫).'
+                  : 'Nhập email và mật khẩu mới bạn muốn đặt cho tài khoản.'}
               </p>
             </div>
 
-            {/* Quick-Select Saved Accounts on this Browser */}
+            {/* Quick-Select Saved Accounts on this Device */}
             {mode === 'signin' && savedAccounts.length > 0 && (
               <div className="mt-4 rounded-2xl border border-indigo-100 bg-indigo-50/50 p-3">
-                <div className="text-[11px] font-bold text-indigo-800 mb-2">
-                  Tài khoản đã tạo trên trình duyệt này (chạm để điền nhanh):
+                <div className="mb-2 text-[11px] font-bold text-indigo-800">
+                  Tài khoản đã lưu trên máy (chạm để chọn nhanh):
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {savedAccounts.map((acc) => (
-                    <button
-                      key={acc.id}
-                      type="button"
-                      onClick={() => {
-                        setEmail(acc.email);
-                        setErrorMsg(null);
-                      }}
-                      className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-bold transition ${
-                        email.toLowerCase() === acc.email.toLowerCase()
-                          ? 'border-indigo-600 bg-indigo-600 text-white'
-                          : 'border-indigo-200 bg-white text-slate-700 hover:border-indigo-400'
-                      }`}
-                    >
-                      <span>{acc.displayName}</span>
-                      <span className="opacity-75 text-[10px]">({acc.email})</span>
-                    </button>
-                  ))}
+                <div className="flex flex-wrap gap-2">
+                  {savedAccounts.map((acc, i) => {
+                    const active = email.toLowerCase() === acc.email.toLowerCase();
+                    const color =
+                      acc.avatarColor ||
+                      AVATAR_COLOR_PRESETS[i % AVATAR_COLOR_PRESETS.length];
+                    return (
+                      <button
+                        key={acc.id}
+                        type="button"
+                        onClick={() => {
+                          setEmail(acc.email);
+                          setErrorMsg(null);
+                        }}
+                        className={`inline-flex items-center gap-2 rounded-2xl border px-2.5 py-1.5 text-left transition ${
+                          active
+                            ? 'border-indigo-500 bg-white shadow-xs ring-2 ring-indigo-500/20'
+                            : 'border-indigo-100 bg-white/80 hover:border-indigo-300'
+                        }`}
+                      >
+                        <span
+                          className="flex h-6 w-6 items-center justify-center rounded-lg text-[10px] font-black text-white"
+                          style={{ backgroundColor: color }}
+                        >
+                          {acc.avatarText}
+                        </span>
+                        <div className="leading-tight">
+                          <div className="text-xs font-extrabold text-slate-900">
+                            {acc.displayName}
+                          </div>
+                          <div className="text-[10px] text-slate-400">{acc.email}</div>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
 
             {errorMsg && (
-              <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700 space-y-2">
+              <div className="mt-4 space-y-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700">
                 <div>{errorMsg}</div>
                 {mode === 'signin' && (
                   <div className="flex flex-wrap gap-2 pt-1">
@@ -282,7 +229,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                         setMode('reset');
                         setErrorMsg(null);
                       }}
-                      className="rounded-lg bg-rose-600 px-2.5 py-1 text-[11px] font-extrabold text-white hover:bg-rose-700"
+                      className="rounded-lg bg-rose-600 px-2.5 py-1.5 text-[11px] font-extrabold text-white hover:bg-rose-700"
                     >
                       Đặt lại mật khẩu mới
                     </button>
@@ -292,7 +239,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                         setMode('signup');
                         setErrorMsg(null);
                       }}
-                      className="rounded-lg border border-rose-300 bg-white px-2.5 py-1 text-[11px] font-extrabold text-rose-700 hover:bg-rose-100"
+                      className="rounded-lg border border-rose-300 bg-white px-2.5 py-1.5 text-[11px] font-extrabold text-rose-700 hover:bg-rose-100"
                     >
                       Chuyển sang Đăng ký
                     </button>
@@ -304,7 +251,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
             <form onSubmit={handleSubmit} className="mt-5 space-y-4">
               {mode === 'signup' && (
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  <label className="mb-1.5 block text-xs font-bold text-slate-700">
                     Tên hiển thị của bạn *
                   </label>
                   <div className="relative">
@@ -315,14 +262,14 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                       value={displayName}
                       onChange={(e) => setDisplayName(e.target.value)}
                       placeholder="VD: Phạm Ngọc Huân"
-                      className="h-11 w-full rounded-2xl border border-indigo-200 bg-slate-50/70 pl-10 pr-4 text-sm font-semibold text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white"
+                      className="h-12 w-full rounded-2xl border border-indigo-200 bg-slate-50/70 pl-10 pr-4 text-base font-semibold text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white sm:text-sm"
                     />
                   </div>
                 </div>
               )}
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                <label className="mb-1.5 block text-xs font-bold text-slate-700">
                   Địa chỉ Email *
                 </label>
                 <div className="relative">
@@ -330,17 +277,18 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                   <input
                     type="email"
                     required
+                    inputMode="email"
                     autoComplete="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="name@example.com"
-                    className="h-11 w-full rounded-2xl border border-indigo-200 bg-slate-50/70 pl-10 pr-4 text-sm font-semibold text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white"
+                    className="h-12 w-full rounded-2xl border border-indigo-200 bg-slate-50/70 pl-10 pr-4 text-base font-semibold text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white sm:text-sm"
                   />
                 </div>
               </div>
 
               <div>
-                <div className="flex items-center justify-between mb-1.5">
+                <div className="mb-1.5 flex items-center justify-between">
                   <label className="block text-xs font-bold text-slate-700">
                     {mode === 'reset' ? 'Mật khẩu mới (tối thiểu 6 ký tự) *' : 'Mật khẩu *'}
                   </label>
@@ -353,7 +301,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                       }}
                       className="text-[11px] font-bold text-indigo-600 hover:underline"
                     >
-                      Đặt lại mật khẩu?
+                      Quên / Đặt lại mật khẩu?
                     </button>
                   )}
                 </div>
@@ -367,12 +315,12 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Nhập tối thiểu 6 ký tự"
-                    className="h-11 w-full rounded-2xl border border-indigo-200 bg-slate-50/70 pl-10 pr-11 text-sm font-semibold text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white"
+                    className="h-12 w-full rounded-2xl border border-indigo-200 bg-slate-50/70 pl-10 pr-12 text-base font-semibold text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white sm:text-sm"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword((v) => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 text-slate-400 hover:text-indigo-600"
+                    className="absolute right-3 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-xl text-slate-400 hover:text-indigo-600"
                     title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu để kiểm tra'}
                   >
                     {showPassword ? (
@@ -382,6 +330,29 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                     )}
                   </button>
                 </div>
+
+                {/* Live Password Strength Meter for Signup & Reset */}
+                {(mode === 'signup' || mode === 'reset') && password.length > 0 && (
+                  <div className="mt-2 flex items-center justify-between text-[11px] font-bold">
+                    <div className="mr-3 flex flex-1 gap-1">
+                      {[1, 2, 3, 4].map((lvl) => (
+                        <div
+                          key={lvl}
+                          className="h-1.5 flex-1 rounded-full bg-slate-200 transition-colors"
+                          style={{
+                            backgroundColor:
+                              passwordStrength.score >= lvl
+                                ? passwordStrength.color
+                                : undefined,
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <span style={{ color: passwordStrength.color }}>
+                      {passwordStrength.label}
+                    </span>
+                  </div>
+                )}
               </div>
 
               <button
@@ -402,7 +373,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 ) : mode === 'signup' ? (
                   <>
                     <CheckCircle2 className="h-4 w-4" />
-                    <span>Tạo tài khoản &amp; Vào sổ thu chi</span>
+                    <span>Tạo tài khoản &amp; Bắt đầu</span>
                   </>
                 ) : (
                   <>
@@ -446,11 +417,87 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
             </div>
           </div>
         </div>
+
+        {/* Product Value Proposition (Left on desktop, below Login on mobile) */}
+        <div className="order-2 space-y-5 lg:order-1 lg:col-span-6 lg:pr-6">
+          <div className="inline-flex items-center gap-2 rounded-2xl border border-indigo-200 bg-indigo-50/90 px-3.5 py-1.5 text-xs font-extrabold text-indigo-700">
+            <Sparkles className="h-3.5 w-3.5" />
+            <span>Trợ lý Thu Chi Cá Nhân · AI Giọng nói</span>
+          </div>
+
+          <h1 className="text-2xl font-black tracking-tight text-slate-900 sm:text-4xl lg:text-[42px] lg:leading-[1.15]">
+            Kiểm soát dòng tiền cá nhân{' '}
+            <span className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 bg-clip-text text-transparent">
+              mượt mà trên mọi thiết bị.
+            </span>
+          </h1>
+
+          <p className="text-sm leading-relaxed text-slate-600 sm:text-base">
+            Tối ưu cho cả điện thoại lẫn máy tính. Mọi tài khoản đều bắt đầu sạch sẽ từ{' '}
+            <span className="font-bold text-slate-800">0 ₫</span>, hỗ trợ ghi chép bằng
+            giọng nói tiếng Việt có sóng âm trực quan, phân tích biểu đồ chuyên sâu và bảo vệ
+            bằng mã hóa đa lớp.
+          </p>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="rounded-3xl border border-indigo-100 bg-white/90 p-4 shadow-xs">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-500/10 text-blue-600">
+                <Sparkles className="h-5 w-5" />
+              </div>
+              <h3 className="mt-2.5 text-sm font-extrabold text-slate-900">
+                Giọng Nói Sóng Âm Trực Quan
+              </h3>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                Nói tiếng Việt tự nhiên (&ldquo;ăn sáng 45k, đổ xăng 70k&rdquo;) với sóng âm
+                uốn lượn 60fps &amp; nhận diện chữ không độ trễ.
+              </p>
+            </div>
+
+            <div className="rounded-3xl border border-indigo-100 bg-white/90 p-4 shadow-xs">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-500/10 text-purple-600">
+                <Layers className="h-5 w-5" />
+              </div>
+              <h3 className="mt-2.5 text-sm font-extrabold text-slate-900">
+                Biểu Đồ &amp; 2 Giao Diện
+              </h3>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                Biểu đồ Donut cơ cấu Thu/Chi và Dòng tiền lũy kế 12 tháng, chuyển 1 chạm sang
+                giao diện Đơn giản.
+              </p>
+            </div>
+
+            <div className="rounded-3xl border border-indigo-100 bg-white/90 p-4 shadow-xs">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600">
+                <ShieldCheck className="h-5 w-5" />
+              </div>
+              <h3 className="mt-2.5 text-sm font-extrabold text-slate-900">
+                Bảo Mật PBKDF2-SHA256
+              </h3>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                Mật khẩu băm 100.000 vòng kèm Salt ngẫu nhiên &amp; Session Token có chữ ký chống
+                giả mạo.
+              </p>
+            </div>
+
+            <div className="rounded-3xl border border-indigo-100 bg-white/90 p-4 shadow-xs">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600">
+                <Zap className="h-5 w-5" />
+              </div>
+              <h3 className="mt-2.5 text-sm font-extrabold text-slate-900">
+                Chuẩn App Trên Điện Thoại
+              </h3>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                Thanh điều hướng dưới ngón tay, ẩn/hiện số dư riêng tư, nhóm giao dịch theo từng
+                ngày.
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Footer */}
       <footer className="mx-auto w-full max-w-6xl text-center text-xs text-slate-400">
-        Finance Pro · Hệ thống Quản lý Tài chính Cá nhân Thông minh
+        Finance Pro · Quản lý Tài chính Cá nhân Thông minh
       </footer>
     </div>
   );

@@ -6,10 +6,11 @@ import {
   Check,
   Download,
   Edit3,
+  Eye,
+  EyeOff,
   FolderPlus,
   Loader2,
   Mic,
-  MicOff,
   PlusCircle,
   Search,
   Send,
@@ -23,7 +24,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { CATEGORY_BY_SLUG, SYSTEM_CATEGORIES } from '@/data/categories';
-import { formatVndNumber } from '@/lib/vietnameseParser';
+import { formatVndNumber, parseVietnameseExpenseText } from '@/lib/vietnameseParser';
 import type {
   CategorySlug,
   FinanceTransaction,
@@ -34,12 +35,15 @@ import type {
 import { AnalyticsChartsSection } from './AnalyticsChartsSection';
 import { CategoryIcon } from './CategoryIcon';
 
+export type MobileNavTab = 'overview' | 'charts' | 'ledger' | 'account';
+
 interface StandardModeViewProps {
   activeWallet: Wallet;
   wallets: Wallet[];
   onSelectWallet: (walletId: string) => void;
   transactions: FinanceTransaction[];
   onSubmitNaturalInput: (text: string) => Promise<void>;
+  onOpenVoiceSheet: () => void;
   onAddManualTransaction: (params: {
     type: TransactionType;
     amount: number;
@@ -47,10 +51,9 @@ interface StandardModeViewProps {
     description: string;
     transactionDate: string;
   }) => Promise<void>;
-  onCreateWallet: (params: {
-    name: string;
-    type: WalletType;
-  }) => Promise<void>;
+  manualModalOpen: boolean;
+  onSetManualModalOpen: (open: boolean) => void;
+  onCreateWallet: (params: { name: string; type: WalletType }) => Promise<void>;
   isParsing: boolean;
   lastAddedBatch: {
     ids: string[];
@@ -66,17 +69,40 @@ interface StandardModeViewProps {
   ) => Promise<void>;
   onDeleteTransaction: (id: string) => Promise<void>;
   onClearWalletTransactions: () => Promise<void>;
+  mobileTab: MobileNavTab;
+  onChangeMobileTab: (tab: MobileNavTab) => void;
 }
 
 const SAMPLE_PROMPTS = [
   'Ăn bún chả 45k rồi đổ xăng 70 nghìn',
-  'Sáng mua đồ ăn 35 nghìn với mua cà phê 30k',
+  'Sáng mua rau 35k với mua thịt bò 150k',
   'Đóng tiền điện nước 850 nghìn',
-  'Mua sách chuyên ngành 150k',
   'Nhận lương tháng 12 triệu',
 ];
 
-const MANUAL_QUICK_AMOUNTS = [35000, 50000, 100000, 200000, 500000, 1000000];
+const MANUAL_QUICK_AMOUNTS = [20000, 50000, 100000, 200000, 500000];
+
+function formatDateGroupLabel(dateIso: string): { key: string; label: string } {
+  const d = new Date(dateIso);
+  const now = new Date();
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+
+  const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate()
+  ).padStart(2, '0')}`;
+
+  const dateText = `${String(d.getDate()).padStart(2, '0')}/${String(
+    d.getMonth() + 1
+  ).padStart(2, '0')}/${d.getFullYear()}`;
+
+  if (d.toDateString() === now.toDateString()) {
+    return { key, label: `Hôm nay · ${dateText}` };
+  }
+  if (d.toDateString() === yesterday.toDateString()) {
+    return { key, label: `Hôm qua · ${dateText}` };
+  }
+  return { key, label: dateText };
+}
 
 export function StandardModeView({
   activeWallet,
@@ -84,7 +110,10 @@ export function StandardModeView({
   onSelectWallet,
   transactions,
   onSubmitNaturalInput,
+  onOpenVoiceSheet,
   onAddManualTransaction,
+  manualModalOpen,
+  onSetManualModalOpen,
   onCreateWallet,
   isParsing,
   lastAddedBatch,
@@ -92,9 +121,11 @@ export function StandardModeView({
   onUpdateTransaction,
   onDeleteTransaction,
   onClearWalletTransactions,
+  mobileTab,
+  onChangeMobileTab,
 }: StandardModeViewProps) {
   const [omnibarText, setOmnibarText] = useState('');
-  const [isListening, setIsListening] = useState(false);
+  const [hideBalance, setHideBalance] = useState(false);
 
   // Filters
   const [filterType, setFilterType] = useState<'all' | TransactionType>('all');
@@ -104,8 +135,7 @@ export function StandardModeView({
   );
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Manual Structured Entry Panel
-  const [showManualForm, setShowManualForm] = useState(false);
+  // Manual Structured Entry State (Bottom Sheet / Modal)
   const [manualType, setManualType] = useState<TransactionType>('expense');
   const [manualAmount, setManualAmount] = useState('');
   const [manualCategory, setManualCategory] = useState<CategorySlug>('an-uong');
@@ -126,6 +156,12 @@ export function StandardModeView({
   const [editAmount, setEditAmount] = useState('');
   const [editCategory, setEditCategory] = useState<CategorySlug>('an-uong');
   const [editType, setEditType] = useState<TransactionType>('expense');
+
+  // Instant 0ms preview while user types into omnibar
+  const liveOmnibarPreview = useMemo(() => {
+    if (!omnibarText.trim()) return [];
+    return parseVietnameseExpenseText(omnibarText.trim());
+  }, [omnibarText]);
 
   const handleOmnibarSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -153,7 +189,7 @@ export function StandardModeView({
       });
       setManualAmount('');
       setManualDesc('');
-      setShowManualForm(false);
+      onSetManualModalOpen(false);
     } finally {
       setSavingManual(false);
     }
@@ -168,59 +204,6 @@ export function StandardModeView({
     });
     setNewWalletName('');
     setShowWalletPanel(false);
-  };
-
-  const toggleVoiceInput = () => {
-    if (typeof window === 'undefined') return;
-    const SpeechRec =
-      (window as unknown as Record<string, unknown>).SpeechRecognition ||
-      (window as unknown as Record<string, unknown>).webkitSpeechRecognition;
-
-    if (!SpeechRec) {
-      alert(
-        'Trình duyệt hiện tại chưa hỗ trợ nhận diện giọng nói. Hãy dùng Google Chrome hoặc Microsoft Edge.'
-      );
-      return;
-    }
-
-    if (isListening) {
-      setIsListening(false);
-      return;
-    }
-
-    const recognition = new (SpeechRec as new () => {
-      lang: string;
-      interimResults: boolean;
-      maxAlternatives: number;
-      onresult: (event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void;
-      onerror: () => void;
-      onend: () => void;
-      start: () => void;
-    })();
-    recognition.lang = 'vi-VN';
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
-    setIsListening(true);
-
-    recognition.onresult = async (event) => {
-      const transcript = event.results?.[0]?.[0]?.transcript || '';
-      setIsListening(false);
-      if (transcript.trim()) {
-        setOmnibarText('');
-        await onSubmitNaturalInput(transcript.trim());
-      }
-    };
-
-    recognition.onerror = () => {
-      setIsListening(false);
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-    };
-
-    recognition.start();
   };
 
   // Personal Financial Metrics Calculation
@@ -252,7 +235,6 @@ export function StandardModeView({
     }
 
     const balance = totalIncome - totalExpense;
-
     const categoryBreakdown = Object.entries(categoryTotals)
       .map(([slug, amount]) => ({
         category: CATEGORY_BY_SLUG[slug as CategorySlug] || CATEGORY_BY_SLUG['khac'],
@@ -306,6 +288,31 @@ export function StandardModeView({
     });
   }, [transactions, filterType, filterCategory, filterPeriod, searchQuery]);
 
+  // Group filtered transactions by Date Header (Money Lover / Spendee style)
+  const groupedByDate = useMemo(() => {
+    const groups: Array<{
+      key: string;
+      label: string;
+      netTotal: number;
+      items: FinanceTransaction[];
+    }> = [];
+    const map = new Map<string, (typeof groups)[number]>();
+
+    for (const tx of filteredTransactions) {
+      const { key, label } = formatDateGroupLabel(tx.transactionDate);
+      let grp = map.get(key);
+      if (!grp) {
+        grp = { key, label, netTotal: 0, items: [] };
+        map.set(key, grp);
+        groups.push(grp);
+      }
+      grp.items.push(tx);
+      grp.netTotal += tx.type === 'income' ? tx.amount : -tx.amount;
+    }
+
+    return groups;
+  }, [filteredTransactions]);
+
   const startInlineEdit = (tx: FinanceTransaction) => {
     setEditingId(tx.id);
     setEditDesc(tx.description);
@@ -351,485 +358,448 @@ export function StandardModeView({
     a.click();
   };
 
+  const maskMoney = (formatted: string) => (hideBalance ? '•••••••• ₫' : formatted);
+
+  const showOverview = mobileTab === 'overview';
+  const showCharts = mobileTab === 'charts';
+  const showLedger = mobileTab === 'ledger';
+
   return (
-    <div className="space-y-6 pb-16">
-      {/* 1. STICKY AI OMNIBAR + MANUAL ADD TRANSACTION BUTTON */}
-      <div className="sticky top-16 z-20 rounded-3xl border border-indigo-200/80 bg-white/95 p-4 shadow-[0_12px_36px_rgb(79,70,229,0.1)] backdrop-blur-xl dark:border-indigo-500/25 dark:bg-[#131B2E]/95">
-        <form
-          onSubmit={handleOmnibarSubmit}
-          className="flex flex-col gap-3 lg:flex-row lg:items-center"
-        >
-          <div className="relative flex-1">
-            <Sparkles className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-indigo-500" />
-            <input
-              type="text"
-              value={omnibarText}
-              onChange={(e) => setOmnibarText(e.target.value)}
-              placeholder='Nhập nhanh câu thu/chi (VD: "ăn sáng 45k, đổ xăng 70 nghìn", "nhận lương 12tr")...'
-              className="h-12 w-full rounded-2xl border border-indigo-100 bg-slate-50/90 pl-11 pr-10 text-sm font-medium text-slate-900 placeholder-slate-400 outline-none transition focus:border-indigo-500 focus:bg-white dark:border-indigo-500/20 dark:bg-[#0B0F19]/80 dark:text-white dark:placeholder-slate-500"
-            />
-            {omnibarText && (
+    <div className="space-y-5 pb-28 lg:pb-16">
+      {/* =====================================================================
+          SECTION A: HERO MOBILE BALANCE CARD + WALLET STRIP (Overview on mobile, always on desktop)
+         ===================================================================== */}
+      <div className={`${showOverview ? 'block' : 'hidden lg:block'} space-y-5`}>
+        {/* Mobile Hero Balance Card (MoMo / Revolut inspired, hidden on xl if desired, shown compactly on mobile/tablet) */}
+        <div className="rounded-3xl border border-indigo-200/70 bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700 p-5 text-white shadow-[0_14px_38px_rgba(79,70,229,0.28)] sm:p-6 lg:hidden">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <WalletIcon className="h-4 w-4 text-sky-200" />
+              <span className="text-xs font-bold text-indigo-100">{activeWallet.name}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setHideBalance((v) => !v)}
+              className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-bold text-white backdrop-blur-md"
+            >
+              {hideBalance ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              <span>{hideBalance ? 'Hiện số' : 'Ẩn số'}</span>
+            </button>
+          </div>
+
+          <div className="mt-3 font-mono text-3xl font-black tabular-nums tracking-tight">
+            {maskMoney(`${formatVndNumber(stats.balance)} ₫`)}
+          </div>
+
+          <div className="mt-4 grid grid-cols-2 gap-3 rounded-2xl bg-white/12 p-3 backdrop-blur-md">
+            <div>
+              <div className="text-[11px] font-semibold text-emerald-200">Tổng thu</div>
+              <div className="mt-0.5 font-mono text-sm font-extrabold tabular-nums">
+                {maskMoney(`+${formatVndNumber(stats.totalIncome)} ₫`)}
+              </div>
+            </div>
+            <div className="border-l border-white/15 pl-3">
+              <div className="text-[11px] font-semibold text-rose-200">Tổng chi</div>
+              <div className="mt-0.5 font-mono text-sm font-extrabold tabular-nums">
+                {maskMoney(`−${formatVndNumber(stats.totalExpense)} ₫`)}
+              </div>
+            </div>
+          </div>
+
+          {/* Mobile Quick Actions */}
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={onOpenVoiceSheet}
+              className="flex h-10 items-center justify-center gap-1.5 rounded-2xl bg-white text-xs font-extrabold text-indigo-700 shadow-sm active:scale-95"
+            >
+              <Mic className="h-3.5 w-3.5" />
+              <span>Nói AI</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onSetManualModalOpen(true)}
+              className="flex h-10 items-center justify-center gap-1.5 rounded-2xl bg-white/20 text-xs font-extrabold text-white backdrop-blur-md active:scale-95"
+            >
+              <PlusCircle className="h-3.5 w-3.5" />
+              <span>Ghi tay</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeMobileTab('charts')}
+              className="flex h-10 items-center justify-center gap-1.5 rounded-2xl bg-white/20 text-xs font-extrabold text-white backdrop-blur-md active:scale-95"
+            >
+              <Activity className="h-3.5 w-3.5" />
+              <span>Biểu đồ</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 1. AI OMNIBAR (Quick Natural Input + Real-time Preview + Voice Studio Trigger) */}
+        <div className="rounded-3xl border border-indigo-200/80 bg-white/95 p-4 shadow-[0_10px_32px_rgb(79,70,229,0.08)] backdrop-blur-xl dark:border-indigo-500/25 dark:bg-[#131B2E]/95 lg:sticky lg:top-16 lg:z-20">
+          <form
+            onSubmit={handleOmnibarSubmit}
+            className="flex flex-col gap-2.5 lg:flex-row lg:items-center"
+          >
+            <div className="relative flex-1">
+              <Sparkles className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-indigo-500" />
+              <input
+                type="text"
+                value={omnibarText}
+                onChange={(e) => setOmnibarText(e.target.value)}
+                placeholder='Gõ câu thu/chi (VD: "ăn sáng 45k, đổ xăng 70k")...'
+                className="h-12 w-full rounded-2xl border border-indigo-100 bg-slate-50/90 pl-10 pr-10 text-base font-medium text-slate-900 placeholder-slate-400 outline-none transition focus:border-indigo-500 focus:bg-white dark:border-indigo-500/20 dark:bg-[#0B0F19]/80 dark:text-white dark:placeholder-slate-500 sm:text-sm"
+              />
+              {omnibarText && (
+                <button
+                  type="button"
+                  onClick={() => setOmnibarText('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setOmnibarText('')}
-                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                onClick={onOpenVoiceSheet}
+                className="inline-flex h-12 flex-1 items-center justify-center gap-2 rounded-2xl border border-indigo-200 bg-indigo-50 px-4 text-xs font-extrabold text-indigo-700 transition hover:bg-indigo-100 dark:border-indigo-400/30 dark:bg-indigo-500/15 dark:text-indigo-200 lg:flex-none"
+                title="Mở micro thu âm kèm sóng âm trực tiếp"
               >
-                <X className="h-4 w-4" />
+                <Mic className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
+                <span>Nói (Sóng âm)</span>
+              </button>
+
+              <button
+                type="submit"
+                disabled={isParsing || !omnibarText.trim()}
+                className="inline-flex h-12 flex-[1.4] items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 px-5 text-xs font-extrabold text-white shadow-md shadow-indigo-500/25 transition hover:brightness-105 disabled:opacity-55 lg:flex-none"
+              >
+                {isParsing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4" />
+                )}
+                <span>Lưu nhanh</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onSetManualModalOpen(true)}
+                className="hidden h-12 items-center justify-center gap-2 rounded-2xl border-2 border-indigo-200 bg-white px-4 text-xs font-extrabold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-500/30 dark:bg-[#0E1322] dark:text-indigo-300 sm:inline-flex"
+              >
+                <PlusCircle className="h-4 w-4 text-indigo-600" />
+                <span>Ghi thủ công</span>
+              </button>
+            </div>
+          </form>
+
+          {/* 0ms Live On-Device Preview Chip when typing */}
+          {liveOmnibarPreview.length > 0 && (
+            <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-bold text-emerald-600">
+                Nhận diện tức thì:
+              </span>
+              {liveOmnibarPreview.map((item, idx) => (
+                <span
+                  key={idx}
+                  className="inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50/80 px-2.5 py-0.5 text-[11px] font-bold text-slate-800 dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200"
+                >
+                  <span>{item.description}</span>
+                  <span>·</span>
+                  <span className="font-mono text-emerald-700 dark:text-emerald-300">
+                    {formatVndNumber(item.amount)}₫
+                  </span>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Horizontal Scrollable Sample Utterance Chips (mobile friendly) */}
+          <div className="mt-2.5 flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
+            <span className="shrink-0 text-[11px] font-bold text-indigo-600 dark:text-indigo-300">
+              Thử nhanh:
+            </span>
+            {SAMPLE_PROMPTS.map((sample) => (
+              <button
+                key={sample}
+                type="button"
+                onClick={() => setOmnibarText(sample)}
+                className="shrink-0 rounded-xl border border-indigo-100 bg-indigo-50/60 px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-indigo-300 hover:bg-indigo-100/80 hover:text-indigo-700 dark:border-indigo-500/20 dark:bg-white/[0.04] dark:text-slate-300"
+              >
+                “{sample}”
+              </button>
+            ))}
+          </div>
+
+          {/* Optimistic Confirmation + 1-Click Undo Banner */}
+          {lastAddedBatch && (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-emerald-300/80 bg-gradient-to-r from-emerald-50/90 to-teal-50/80 px-4 py-2.5 text-xs dark:border-emerald-500/30 dark:from-emerald-950/50 dark:to-teal-950/40">
+              <div className="flex items-center gap-2 font-bold text-emerald-800 dark:text-emerald-200">
+                <Check className="h-4 w-4 shrink-0 text-emerald-600" />
+                <span>{lastAddedBatch.summary}</span>
+                <span className="rounded-md bg-emerald-600/15 px-2 py-0.5 font-mono text-[10px] text-emerald-700 dark:text-emerald-300">
+                  {lastAddedBatch.engine}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={onUndoLastBatch}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-xs transition hover:bg-rose-700"
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+                <span>Hoàn tác ({lastAddedBatch.ids.length})</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 2. HORIZONTAL WALLET SWITCHER STRIP + UTILITIES */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex max-w-full items-center gap-1.5 overflow-x-auto rounded-2xl border border-indigo-100 bg-white p-1.5 shadow-xs no-scrollbar dark:border-indigo-500/20 dark:bg-[#131B2E]">
+            {wallets.map((w) => {
+              const active = w.id === activeWallet.id;
+              return (
+                <button
+                  key={w.id}
+                  type="button"
+                  onClick={() => onSelectWallet(w.id)}
+                  className={`inline-flex shrink-0 items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-extrabold transition ${
+                    active
+                      ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white shadow-sm'
+                      : 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 dark:text-slate-300 dark:hover:bg-white/[0.05]'
+                  }`}
+                >
+                  <WalletIcon className="h-3.5 w-3.5" />
+                  <span>{w.name}</span>
+                  <span
+                    className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] ${
+                      active
+                        ? 'bg-white/20 text-white'
+                        : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300'
+                    }`}
+                  >
+                    {w.type === 'savings' ? 'Tiết kiệm' : 'Cá nhân'}
+                  </span>
+                </button>
+              );
+            })}
+
+            <button
+              type="button"
+              onClick={() => setShowWalletPanel((v) => !v)}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/50 px-3 py-2 text-xs font-extrabold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300"
+            >
+              <FolderPlus className="h-3.5 w-3.5" />
+              <span>+ Thêm ví</span>
+            </button>
+          </div>
+
+          <div className="hidden items-center gap-2 lg:flex">
+            <button
+              type="button"
+              onClick={() => setHideBalance((v) => !v)}
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-indigo-100 bg-white px-3 text-xs font-bold text-slate-600 shadow-2xs hover:bg-slate-50 dark:border-indigo-500/20 dark:bg-[#131B2E] dark:text-slate-300"
+              title="Ẩn / Hiện số tiền"
+            >
+              {hideBalance ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              <span>{hideBalance ? 'Hiện số' : 'Ẩn số'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={exportCsv}
+              disabled={transactions.length === 0}
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-indigo-100 bg-white px-3.5 text-xs font-bold text-slate-700 shadow-2xs transition hover:bg-slate-50 disabled:opacity-50 dark:border-indigo-500/20 dark:bg-[#131B2E] dark:text-slate-200"
+            >
+              <Download className="h-3.5 w-3.5 text-indigo-500" />
+              <span>Xuất CSV</span>
+            </button>
+
+            {transactions.length > 0 && (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (
+                    window.confirm(
+                      `Bạn có chắc muốn xóa toàn bộ giao dịch trong "${activeWallet.name}" về 0 ₫ không?`
+                    )
+                  ) {
+                    await onClearWalletTransactions();
+                  }
+                }}
+                className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:border-rose-500/20 dark:bg-[#131B2E] dark:text-rose-400"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Làm sạch ví</span>
               </button>
             )}
           </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={toggleVoiceInput}
-              className={`inline-flex h-12 items-center justify-center gap-2 rounded-2xl px-4 text-xs font-extrabold transition ${
-                isListening
-                  ? 'animate-pulse bg-rose-600 text-white shadow-lg shadow-rose-500/30'
-                  : 'border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:border-indigo-400/30 dark:bg-indigo-500/15 dark:text-indigo-200'
-              }`}
-              title="Bấm để nói bằng giọng tiếng Việt (vi-VN)"
-            >
-              {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-              <span>{isListening ? 'Đang nghe...' : 'Nói (Mic)'}</span>
-            </button>
-
-            <button
-              type="submit"
-              disabled={isParsing || !omnibarText.trim()}
-              className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 px-5 text-xs font-extrabold text-white shadow-md shadow-indigo-500/25 transition hover:brightness-105 disabled:opacity-60"
-            >
-              {isParsing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="h-4 w-4" />
-              )}
-              <span>AI Phân tích &amp; Lưu</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowManualForm((v) => !v)}
-              className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border-2 border-indigo-200 bg-white px-4 text-xs font-extrabold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-500/30 dark:bg-[#0E1322] dark:text-indigo-300"
-            >
-              <PlusCircle className="h-4 w-4 text-indigo-600" />
-              <span>Ghi thủ công</span>
-            </button>
-          </div>
-        </form>
-
-        {/* Quick Sample Utterance Chips */}
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-300">
-            Mẫu câu gợi ý:
-          </span>
-          {SAMPLE_PROMPTS.map((sample) => (
-            <button
-              key={sample}
-              type="button"
-              onClick={() => setOmnibarText(sample)}
-              className="rounded-xl border border-indigo-100 bg-indigo-50/60 px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-indigo-300 hover:bg-indigo-100/80 hover:text-indigo-700 dark:border-indigo-500/20 dark:bg-white/[0.04] dark:text-slate-300 dark:hover:text-indigo-200"
-            >
-              “{sample}”
-            </button>
-          ))}
         </div>
 
-        {/* Structured Manual Transaction Entry Drawer */}
-        {showManualForm && (
+        {/* Inline Personal Wallet Creation Drawer */}
+        {showWalletPanel && (
           <form
-            onSubmit={handleManualSubmit}
-            className="mt-4 space-y-4 rounded-2xl border border-indigo-200 bg-indigo-50/50 p-4 dark:border-indigo-500/30 dark:bg-[#0B0F19]/90"
+            onSubmit={handleCreateWalletSubmit}
+            className="flex flex-wrap items-end justify-between gap-3 rounded-3xl border border-indigo-200 bg-white p-4 shadow-md dark:border-indigo-500/30 dark:bg-[#131B2E]"
           >
-            <div className="flex items-center justify-between border-b border-indigo-100 pb-2.5 dark:border-indigo-500/20">
-              <span className="text-xs font-extrabold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
-                Thêm giao dịch chi tiết vào: {activeWallet.name}
-              </span>
-              <button
-                type="button"
-                onClick={() => setShowManualForm(false)}
-                className="text-xs font-bold text-slate-500 hover:text-slate-800"
-              >
-                Đóng
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              {/* Type */}
-              <div>
-                <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-300">
-                  Loại giao dịch
-                </label>
-                <div className="grid grid-cols-2 rounded-xl border border-indigo-200 bg-white p-0.5 dark:border-indigo-500/30 dark:bg-slate-900">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setManualType('expense');
-                      if (manualCategory === 'thu-nhap') setManualCategory('an-uong');
-                    }}
-                    className={`rounded-lg py-1.5 text-xs font-extrabold transition ${
-                      manualType === 'expense'
-                        ? 'bg-rose-600 text-white'
-                        : 'text-slate-600 dark:text-slate-300'
-                    }`}
-                  >
-                    Chi tiêu
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setManualType('income');
-                      setManualCategory('thu-nhap');
-                    }}
-                    className={`rounded-lg py-1.5 text-xs font-extrabold transition ${
-                      manualType === 'income'
-                        ? 'bg-emerald-600 text-white'
-                        : 'text-slate-600 dark:text-slate-300'
-                    }`}
-                  >
-                    Thu nhập
-                  </button>
-                </div>
-              </div>
-
-              {/* Description */}
-              <div className="lg:col-span-2">
-                <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-300">
-                  Nội dung / Mô tả *
+            <div className="flex flex-1 flex-wrap items-end gap-3">
+              <div className="min-w-[200px] flex-1">
+                <label className="mb-1 block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Tên ví cá nhân mới *
                 </label>
                 <input
                   type="text"
                   required
-                  value={manualDesc}
-                  onChange={(e) => setManualDesc(e.target.value)}
-                  placeholder="VD: Ăn trưa, Đổ xăng, Tiền học bổng..."
-                  className="h-9 w-full rounded-xl border border-indigo-200 bg-white px-3 text-xs font-semibold text-slate-900 outline-none focus:border-indigo-500 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-white"
+                  value={newWalletName}
+                  onChange={(e) => setNewWalletName(e.target.value)}
+                  placeholder="VD: Tài khoản Ngân hàng, Quỹ Tiết kiệm..."
+                  className="h-10 w-full rounded-xl border border-indigo-200 bg-slate-50 px-3 text-base font-bold text-slate-900 dark:bg-slate-900 dark:text-white sm:text-xs"
                 />
               </div>
 
-              {/* Amount */}
-              <div>
-                <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-300">
-                  Số tiền (VNĐ) *
+              <div className="w-full sm:w-48">
+                <label className="mb-1 block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Phân loại
                 </label>
-                <input
-                  type="number"
-                  required
-                  min="1000"
-                  step="1000"
-                  value={manualAmount}
-                  onChange={(e) => setManualAmount(e.target.value)}
-                  placeholder="VD: 50000"
-                  className="h-9 w-full rounded-xl border border-indigo-200 bg-white px-3 font-mono text-xs font-bold text-slate-900 outline-none focus:border-indigo-500 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-white"
-                />
-              </div>
-
-              {/* Category & Date */}
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-300">
-                    Danh mục
-                  </label>
-                  <select
-                    value={manualCategory}
-                    onChange={(e) => setManualCategory(e.target.value as CategorySlug)}
-                    className="h-9 w-full rounded-xl border border-indigo-200 bg-white px-2 text-xs font-bold text-slate-900 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-white"
-                  >
-                    {SYSTEM_CATEGORIES.map((cat) => (
-                      <option key={cat.slug} value={cat.slug}>
-                        {cat.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-300">
-                    Ngày
-                  </label>
-                  <input
-                    type="date"
-                    value={manualDate}
-                    onChange={(e) => setManualDate(e.target.value)}
-                    className="h-9 w-full rounded-xl border border-indigo-200 bg-white px-2 text-xs font-bold text-slate-900 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-white"
-                  />
-                </div>
+                <select
+                  value={newWalletType}
+                  onChange={(e) => setNewWalletType(e.target.value as WalletType)}
+                  className="h-10 w-full rounded-xl border border-indigo-200 bg-slate-50 px-3 text-xs font-bold text-slate-900 dark:bg-slate-900 dark:text-white"
+                >
+                  <option value="personal">Ví Chi Tiêu Cá Nhân</option>
+                  <option value="savings">Quỹ Tiết Kiệm Cá Nhân</option>
+                </select>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] font-bold text-slate-500">Chọn nhanh:</span>
-                {MANUAL_QUICK_AMOUNTS.map((amt) => (
-                  <button
-                    key={amt}
-                    type="button"
-                    onClick={() => setManualAmount(String(amt))}
-                    className="rounded-lg border border-indigo-200 bg-white px-2 py-1 font-mono text-[11px] font-bold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-indigo-300"
-                  >
-                    {formatVndNumber(amt)}đ
-                  </button>
-                ))}
-              </div>
-
+            <div className="flex w-full items-center gap-2 sm:w-auto">
               <button
                 type="submit"
-                disabled={savingManual}
-                className="h-9 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 px-5 text-xs font-extrabold text-white shadow-sm hover:brightness-105"
+                className="h-10 flex-1 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-5 text-xs font-extrabold text-white sm:flex-none"
               >
-                {savingManual ? 'Đang lưu...' : 'Lưu giao dịch'}
+                Tạo ví ngay
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowWalletPanel(false)}
+                className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600"
+              >
+                Đóng
               </button>
             </div>
           </form>
         )}
 
-        {/* Optimistic Confirmation + 1-Click Undo Banner */}
-        {lastAddedBatch && (
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-300/80 bg-gradient-to-r from-emerald-50/90 to-teal-50/80 px-4 py-2.5 text-xs dark:border-emerald-500/30 dark:from-emerald-950/50 dark:to-teal-950/40">
-            <div className="flex items-center gap-2 font-bold text-emerald-800 dark:text-emerald-200">
-              <Check className="h-4 w-4 shrink-0 text-emerald-600" />
-              <span>{lastAddedBatch.summary}</span>
-              <span className="rounded-md bg-emerald-600/15 px-2 py-0.5 font-mono text-[10px] text-emerald-700 dark:text-emerald-300">
-                {lastAddedBatch.engine}
+        {/* 3. SYMMETRICAL 4-COLUMN DESKTOP KPI CARDS (2x2 compact grid on mobile!) */}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
+          <div className="flex h-full flex-col justify-between rounded-3xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50/90 via-white to-teal-50/50 p-4 shadow-xs dark:border-emerald-500/20 dark:from-[#131B2E] dark:to-emerald-950/25 sm:p-5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 sm:text-xs">
+                Tổng Thu Nhập
               </span>
+              <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 sm:h-8 sm:w-8">
+                <TrendingUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={onUndoLastBatch}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-xs transition hover:bg-rose-700"
-            >
-              <Undo2 className="h-3.5 w-3.5" />
-              <span>Hoàn tác ({lastAddedBatch.ids.length} khoản)</span>
-            </button>
+            <div className="mt-2 font-mono text-base font-extrabold tabular-nums tracking-tight text-slate-900 dark:text-white sm:mt-3 sm:text-2xl">
+              {maskMoney(`+${formatVndNumber(stats.totalIncome)} ₫`)}
+            </div>
+            <div className="mt-1 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              {activeWallet.name}
+            </div>
           </div>
-        )}
-      </div>
 
-      {/* 2. PERSONAL WALLET BAR & UTILITIES */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="inline-flex flex-wrap items-center gap-1.5 rounded-2xl border border-indigo-100 bg-white p-1.5 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E]">
-          {wallets.map((w) => {
-            const active = w.id === activeWallet.id;
-            const badgeLabel = w.type === 'savings' ? 'Tiết kiệm' : 'Cá nhân';
-            return (
-              <button
-                key={w.id}
-                type="button"
-                onClick={() => onSelectWallet(w.id)}
-                className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-extrabold transition ${
-                  active
-                    ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 dark:text-slate-300 dark:hover:bg-white/[0.05]'
-                }`}
-              >
-                <WalletIcon className="h-3.5 w-3.5" />
-                <span>{w.name}</span>
-                <span
-                  className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] ${
-                    active
-                      ? 'bg-white/20 text-white'
-                      : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300'
-                  }`}
-                >
-                  {badgeLabel}
-                </span>
-              </button>
-            );
-          })}
+          <div className="flex h-full flex-col justify-between rounded-3xl border border-rose-200/80 bg-gradient-to-br from-rose-50/90 via-white to-orange-50/40 p-4 shadow-xs dark:border-rose-500/20 dark:from-[#131B2E] dark:to-rose-950/25 sm:p-5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-rose-700 dark:text-rose-300 sm:text-xs">
+                Tổng Chi Tiêu
+              </span>
+              <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-rose-500/15 text-rose-600 dark:text-rose-300 sm:h-8 sm:w-8">
+                <TrendingDown className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              </div>
+            </div>
+            <div className="mt-2 font-mono text-base font-extrabold tabular-nums tracking-tight text-slate-900 dark:text-white sm:mt-3 sm:text-2xl">
+              {maskMoney(`−${formatVndNumber(stats.totalExpense)} ₫`)}
+            </div>
+            <div className="mt-1 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              Hôm nay: {maskMoney(`${formatVndNumber(stats.todayExpense)} ₫`)}
+            </div>
+          </div>
 
-          <button
-            type="button"
-            onClick={() => setShowWalletPanel((v) => !v)}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/50 px-3 py-2 text-xs font-extrabold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300"
-          >
-            <FolderPlus className="h-3.5 w-3.5" />
-            <span>+ Thêm ví cá nhân</span>
-          </button>
-        </div>
+          <div className="flex h-full flex-col justify-between rounded-3xl border border-blue-200/80 bg-gradient-to-br from-blue-50/90 via-white to-indigo-50/50 p-4 shadow-xs dark:border-blue-500/20 dark:from-[#131B2E] dark:to-indigo-950/25 sm:p-5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-blue-700 dark:text-blue-300 sm:text-xs">
+                Số Dư Hiện Tại
+              </span>
+              <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-blue-500/15 text-blue-600 dark:text-blue-300 sm:h-8 sm:w-8">
+                <WalletIcon className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              </div>
+            </div>
+            <div className="mt-2 font-mono text-base font-extrabold tabular-nums tracking-tight text-slate-900 dark:text-white sm:mt-3 sm:text-2xl">
+              {maskMoney(`${formatVndNumber(stats.balance)} ₫`)}
+            </div>
+            <div className="mt-1 truncate text-[11px] font-semibold text-indigo-600 dark:text-indigo-300">
+              {transactions.length} giao dịch đã lưu
+            </div>
+          </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={exportCsv}
-            disabled={transactions.length === 0}
-            className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-indigo-100 bg-white px-3.5 text-xs font-bold text-slate-700 shadow-2xs transition hover:bg-slate-50 disabled:opacity-50 dark:border-indigo-500/20 dark:bg-[#131B2E] dark:text-slate-200"
-          >
-            <Download className="h-3.5 w-3.5 text-indigo-500" />
-            <span>Xuất CSV</span>
-          </button>
-
-          {transactions.length > 0 && (
-            <button
-              type="button"
-              onClick={async () => {
-                if (
-                  window.confirm(
-                    `Bạn có chắc muốn xóa toàn bộ giao dịch trong "${activeWallet.name}" về 0 ₫ không?`
-                  )
-                ) {
-                  await onClearWalletTransactions();
-                }
-              }}
-              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:border-rose-500/20 dark:bg-[#131B2E] dark:text-rose-400"
-              title="Làm sạch toàn bộ giao dịch trong ví này về 0 ₫"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Làm sạch ví</span>
-            </button>
-          )}
+          <div className="flex h-full flex-col justify-between rounded-3xl border border-purple-200/80 bg-gradient-to-br from-purple-50/90 via-white to-pink-50/40 p-4 shadow-xs dark:border-purple-500/20 dark:from-[#131B2E] dark:to-purple-950/25 sm:p-5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-purple-700 dark:text-purple-300 sm:text-xs">
+                Chi 7 Ngày Qua
+              </span>
+              <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-purple-500/15 text-purple-600 dark:text-purple-300 sm:h-8 sm:w-8">
+                <Activity className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              </div>
+            </div>
+            <div className="mt-2 font-mono text-base font-extrabold tabular-nums tracking-tight text-slate-900 dark:text-white sm:mt-3 sm:text-2xl">
+              {maskMoney(`${formatVndNumber(stats.weeklyExpense)} ₫`)}
+            </div>
+            <div className="mt-1 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              {stats.categoryBreakdown.length} danh mục chi tiêu
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Personal Sub-Wallet Creation Drawer */}
-      {showWalletPanel && (
-        <form
-          onSubmit={handleCreateWalletSubmit}
-          className="flex flex-wrap items-end justify-between gap-3 rounded-3xl border border-indigo-200 bg-white p-5 shadow-md dark:border-indigo-500/30 dark:bg-[#131B2E]"
+      {/* =====================================================================
+          SECTION B: INTERACTIVE ANALYTICS CHARTS (Charts tab on mobile, always on desktop)
+         ===================================================================== */}
+      <div className={`${showCharts ? 'block' : 'hidden lg:block'}`}>
+        <AnalyticsChartsSection
+          transactions={transactions}
+          selectedCategory={filterCategory}
+          onSelectCategory={(slug) => {
+            setFilterCategory(slug);
+            if (slug !== 'all') {
+              onChangeMobileTab('ledger');
+            }
+          }}
+        />
+      </div>
+
+      {/* =====================================================================
+          SECTION C: CATEGORY BREAKDOWN + DATE-GROUPED TRANSACTION LEDGER
+         ===================================================================== */}
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-12">
+        {/* Left 4 Cols: Category Breakdown List (visible in Charts tab on mobile, always on desktop) */}
+        <div
+          className={`${
+            showCharts ? 'block' : 'hidden lg:block'
+          } rounded-3xl border border-indigo-100 bg-white p-5 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E] sm:p-6 lg:col-span-4`}
         >
-          <div className="flex flex-1 flex-wrap items-end gap-3">
-            <div className="min-w-[220px] flex-1">
-              <label className="mb-1 block text-xs font-bold text-slate-700 dark:text-slate-300">
-                Tên ví cá nhân mới *
-              </label>
-              <input
-                type="text"
-                required
-                value={newWalletName}
-                onChange={(e) => setNewWalletName(e.target.value)}
-                placeholder="VD: Tài khoản Ngân hàng, Quỹ Tiết kiệm..."
-                className="h-10 w-full rounded-xl border border-indigo-200 bg-slate-50 px-3 text-xs font-bold text-slate-900 dark:bg-slate-900 dark:text-white"
-              />
-            </div>
-
-            <div className="w-48">
-              <label className="mb-1 block text-xs font-bold text-slate-700 dark:text-slate-300">
-                Phân loại
-              </label>
-              <select
-                value={newWalletType}
-                onChange={(e) => setNewWalletType(e.target.value as WalletType)}
-                className="h-10 w-full rounded-xl border border-indigo-200 bg-slate-50 px-3 text-xs font-bold text-slate-900 dark:bg-slate-900 dark:text-white"
-              >
-                <option value="personal">Ví Chi Tiêu Cá Nhân</option>
-                <option value="savings">Quỹ Tiết Kiệm Cá Nhân</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="submit"
-              className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-5 text-xs font-extrabold text-white"
-            >
-              Tạo ví ngay
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowWalletPanel(false)}
-              className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600"
-            >
-              Đóng
-            </button>
-          </div>
-        </form>
-      )}
-
-      {/* 3. SYMMETRICAL 4-COLUMN PERSONAL FINANCE KPI CARDS (No Budget Limits Clutter) */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {/* KPI 1: Total Income */}
-        <div className="flex h-full flex-col justify-between rounded-3xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50/90 via-white to-teal-50/50 p-5 shadow-xs dark:border-emerald-500/20 dark:from-[#131B2E] dark:to-emerald-950/25">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
-              Tổng Thu Nhập
-            </span>
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-300">
-              <TrendingUp className="h-4 w-4" />
-            </div>
-          </div>
-          <div className="mt-3 font-mono text-2xl font-extrabold tabular-nums tracking-tight text-slate-900 dark:text-white">
-            +{formatVndNumber(stats.totalIncome)} ₫
-          </div>
-          <div className="mt-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
-            Ví: {activeWallet.name}
-          </div>
-        </div>
-
-        {/* KPI 2: Total Expense */}
-        <div className="flex h-full flex-col justify-between rounded-3xl border border-rose-200/80 bg-gradient-to-br from-rose-50/90 via-white to-orange-50/40 p-5 shadow-xs dark:border-rose-500/20 dark:from-[#131B2E] dark:to-rose-950/25">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-rose-700 dark:text-rose-300">
-              Tổng Chi Tiêu
-            </span>
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-rose-500/15 text-rose-600 dark:text-rose-300">
-              <TrendingDown className="h-4 w-4" />
-            </div>
-          </div>
-          <div className="mt-3 font-mono text-2xl font-extrabold tabular-nums tracking-tight text-slate-900 dark:text-white">
-            −{formatVndNumber(stats.totalExpense)} ₫
-          </div>
-          <div className="mt-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
-            Hôm nay: {formatVndNumber(stats.todayExpense)} ₫
-          </div>
-        </div>
-
-        {/* KPI 3: Net Balance */}
-        <div className="flex h-full flex-col justify-between rounded-3xl border border-blue-200/80 bg-gradient-to-br from-blue-50/90 via-white to-indigo-50/50 p-5 shadow-xs dark:border-blue-500/20 dark:from-[#131B2E] dark:to-indigo-950/25">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-blue-700 dark:text-blue-300">
-              Số Dư Hiện Tại
-            </span>
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-500/15 text-blue-600 dark:text-blue-300">
-              <WalletIcon className="h-4 w-4" />
-            </div>
-          </div>
-          <div className="mt-3 font-mono text-2xl font-extrabold tabular-nums tracking-tight text-slate-900 dark:text-white">
-            {formatVndNumber(stats.balance)} ₫
-          </div>
-          <div className="mt-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-300">
-            {transactions.length} giao dịch đã lưu
-          </div>
-        </div>
-
-        {/* KPI 4: 7-Day Activity */}
-        <div className="flex h-full flex-col justify-between rounded-3xl border border-purple-200/80 bg-gradient-to-br from-purple-50/90 via-white to-pink-50/40 p-5 shadow-xs dark:border-purple-500/20 dark:from-[#131B2E] dark:to-purple-950/25">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-purple-700 dark:text-purple-300">
-              Chi Tiêu 7 Ngày Qua
-            </span>
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-purple-500/15 text-purple-600 dark:text-purple-300">
-              <Activity className="h-4 w-4" />
-            </div>
-          </div>
-          <div className="mt-3 font-mono text-2xl font-extrabold tabular-nums tracking-tight text-slate-900 dark:text-white">
-            {formatVndNumber(stats.weeklyExpense)} ₫
-          </div>
-          <div className="mt-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
-            {stats.categoryBreakdown.length} danh mục phát sinh
-          </div>
-        </div>
-      </div>
-
-      {/* 4. INTERACTIVE ANALYTICS CHARTS (Donut Category Chart + Cashflow Timeline Combo Chart) */}
-      <AnalyticsChartsSection
-        transactions={transactions}
-        selectedCategory={filterCategory}
-        onSelectCategory={setFilterCategory}
-      />
-
-      {/* 5. CATEGORY BREAKDOWN + TRANSACTION LEDGER (12-COL SPLIT) */}
-      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
-        {/* Left 4 Cols: Visual Category Breakdown */}
-        <div className="rounded-3xl border border-indigo-100 bg-white p-6 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E] lg:col-span-4">
           <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
-            Cơ Cấu Chi Tiêu Cá Nhân
+            Chi Tiết Theo Danh Mục
           </h3>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
             {stats.categoryBreakdown.length > 0
-              ? `Phân bổ trên ${stats.categoryBreakdown.length} danh mục đã chi`
+              ? `Chạm vào danh mục để lọc giao dịch`
               : 'Chưa phát sinh khoản chi tiêu nào'}
           </p>
 
-          {/* Stacked Bar */}
           <div className="mt-4 flex h-3 w-full gap-0.5 overflow-hidden rounded-full bg-slate-100 p-0.5 dark:bg-slate-800">
             {stats.categoryBreakdown.map((item) => (
               <div
@@ -839,28 +809,26 @@ export function StandardModeView({
                   backgroundColor: item.category.color,
                 }}
                 className="h-full first:rounded-l-full last:rounded-r-full"
-                title={`${item.category.name}: ${formatVndNumber(item.amount)} ₫ (${item.pct}%)`}
               />
             ))}
           </div>
 
-          {/* Ranked Category List */}
-          <div className="mt-5 space-y-3">
+          <div className="mt-4 space-y-2.5">
             {stats.categoryBreakdown.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-indigo-100 px-4 py-8 text-center text-xs text-slate-400 dark:border-indigo-500/20">
-                Ví cá nhân hiện đang ở mức 0 ₫. Hãy nhập câu nói trên thanh AI hoặc bấm
-                &ldquo;Ghi thủ công&rdquo; để bắt đầu theo dõi chi tiêu.
+                Ví cá nhân hiện đang ở mức 0 ₫.
               </div>
             ) : (
               stats.categoryBreakdown.map((item) => (
                 <button
                   key={item.category.slug}
                   type="button"
-                  onClick={() =>
-                    setFilterCategory((prev) =>
-                      prev === item.category.slug ? 'all' : item.category.slug
-                    )
-                  }
+                  onClick={() => {
+                    const next =
+                      filterCategory === item.category.slug ? 'all' : item.category.slug;
+                    setFilterCategory(next);
+                    if (next !== 'all') onChangeMobileTab('ledger');
+                  }}
                   className={`flex w-full items-center justify-between gap-3 rounded-2xl border p-3 text-left transition ${
                     filterCategory === item.category.slug
                       ? 'border-indigo-400 bg-indigo-50/70 dark:border-indigo-400 dark:bg-indigo-500/15'
@@ -887,16 +855,35 @@ export function StandardModeView({
           </div>
         </div>
 
-        {/* Right 8 Cols: Filterable Transaction Table */}
-        <div className="rounded-3xl border border-indigo-100 bg-white p-6 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E] lg:col-span-8">
-          {/* Filter Bar */}
+        {/* Right 8 Cols: Date-Grouped Transaction Ledger (visible on Overview & Ledger on mobile, always on desktop) */}
+        <div
+          className={`${
+            showOverview || showLedger ? 'block' : 'hidden lg:block'
+          } rounded-3xl border border-indigo-100 bg-white p-5 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E] sm:p-6 lg:col-span-8`}
+        >
+          {/* Header & Filter Bar */}
           <div className="flex flex-col gap-3 border-b border-indigo-100/80 pb-4 dark:border-indigo-500/15 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex items-center justify-between xl:hidden">
+              <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                {showOverview ? 'Giao dịch gần đây' : 'Sổ Giao Dịch Chi Tiết'}
+              </h3>
+              {showOverview && transactions.length > 5 && (
+                <button
+                  type="button"
+                  onClick={() => onChangeMobileTab('ledger')}
+                  className="text-xs font-extrabold text-indigo-600"
+                >
+                  Xem tất cả ({transactions.length}) →
+                </button>
+              )}
+            </div>
+
             <div className="flex flex-wrap items-center gap-1.5">
               {(
                 [
                   { id: 'all', label: 'Tất cả' },
-                  { id: 'expense', label: 'Khoản chi' },
-                  { id: 'income', label: 'Khoản thu' },
+                  { id: 'expense', label: 'Chi' },
+                  { id: 'income', label: 'Thu' },
                 ] as const
               ).map((tab) => (
                 <button
@@ -920,9 +907,9 @@ export function StandardModeView({
                 }
                 className="h-9 rounded-xl border border-indigo-100 bg-slate-50 px-2.5 text-xs font-bold text-slate-700 outline-none dark:border-indigo-500/20 dark:bg-slate-800 dark:text-slate-200"
               >
-                <option value="all">Mọi thời gian</option>
+                <option value="all">Mọi lúc</option>
                 <option value="today">Hôm nay</option>
-                <option value="week">7 ngày qua</option>
+                <option value="week">7 ngày</option>
                 <option value="month">Tháng này</option>
               </select>
 
@@ -931,7 +918,7 @@ export function StandardModeView({
                 onChange={(e) => setFilterCategory(e.target.value as 'all' | CategorySlug)}
                 className="h-9 rounded-xl border border-indigo-100 bg-slate-50 px-2.5 text-xs font-bold text-slate-700 outline-none dark:border-indigo-500/20 dark:bg-slate-800 dark:text-slate-200"
               >
-                <option value="all">Mọi danh mục (10)</option>
+                <option value="all">Mọi mục</option>
                 {SYSTEM_CATEGORIES.map((cat) => (
                   <option key={cat.slug} value={cat.slug}>
                     {cat.name}
@@ -940,14 +927,14 @@ export function StandardModeView({
               </select>
             </div>
 
-            <div className="relative w-full xl:w-60">
+            <div className="relative w-full xl:w-56">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Tìm nội dung giao dịch..."
-                className="h-9 w-full rounded-xl border border-indigo-100 bg-slate-50 pl-8 pr-7 text-xs font-medium outline-none focus:border-indigo-400 dark:border-indigo-500/20 dark:bg-slate-800"
+                placeholder="Tìm nội dung..."
+                className="h-9 w-full rounded-xl border border-indigo-100 bg-slate-50 pl-8 pr-7 text-base font-medium outline-none focus:border-indigo-400 dark:border-indigo-500/20 dark:bg-slate-800 sm:text-xs"
               />
               {searchQuery && (
                 <button
@@ -961,152 +948,342 @@ export function StandardModeView({
             </div>
           </div>
 
-          {/* Transaction List */}
-          <div className="mt-4 divide-y divide-indigo-100/60 dark:divide-indigo-500/10">
-            {filteredTransactions.length === 0 ? (
-              <div className="space-y-3 py-14 text-center">
+          {/* Date-Grouped Transaction List */}
+          <div className="mt-4 space-y-5">
+            {groupedByDate.length === 0 ? (
+              <div className="space-y-3 py-12 text-center">
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-500 dark:bg-indigo-500/10">
                   <Calendar className="h-6 w-6" />
                 </div>
                 <div className="text-sm font-extrabold text-slate-800 dark:text-slate-200">
                   {transactions.length === 0
-                    ? `Sổ thu chi "${activeWallet.name}" đang trống (0 ₫)`
-                    : 'Không tìm thấy giao dịch nào khớp bộ lọc'}
+                    ? `Sổ "${activeWallet.name}" đang sạch sẽ (0 ₫)`
+                    : 'Không tìm thấy giao dịch khớp bộ lọc'}
                 </div>
                 <p className="mx-auto max-w-md text-xs text-slate-500 dark:text-slate-400">
                   {transactions.length === 0
-                    ? 'Hãy gõ câu tự nhiên vào ô AI phía trên (ví dụ: "ăn trưa 45k, mua sách 120k") hoặc bấm nút "Ghi thủ công" để thêm giao dịch đầu tiên của bạn.'
-                    : 'Hãy thử đổi bộ lọc thời gian hoặc từ khóa tìm kiếm.'}
+                    ? 'Hãy bấm nút Micro AI để nói (VD: "ăn phở 45k") hoặc bấm "Ghi thủ công" để lưu giao dịch đầu tiên.'
+                    : 'Thử chọn lại khoảng thời gian hoặc từ khóa khác.'}
                 </p>
               </div>
             ) : (
-              filteredTransactions.map((tx) => {
-                const cat = CATEGORY_BY_SLUG[tx.categorySlug] || CATEGORY_BY_SLUG['khac'];
-                const isEditing = editingId === tx.id;
-
-                if (isEditing) {
-                  return (
-                    <div
-                      key={tx.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-indigo-50/50 px-3 py-3.5 dark:bg-indigo-500/10"
+              groupedByDate.map((group) => (
+                <div key={group.key} className="space-y-1.5">
+                  {/* Sticky-feel Date Section Header */}
+                  <div className="flex items-center justify-between rounded-xl bg-slate-50/90 px-3 py-1.5 text-xs dark:bg-white/[0.04]">
+                    <span className="font-extrabold text-slate-600 dark:text-slate-300">
+                      {group.label}
+                    </span>
+                    <span
+                      className={`font-mono font-extrabold tabular-nums ${
+                        group.netTotal >= 0
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-slate-600 dark:text-slate-300'
+                      }`}
                     >
-                      <input
-                        type="text"
-                        value={editDesc}
-                        onChange={(e) => setEditDesc(e.target.value)}
-                        className="h-9 min-w-[160px] flex-1 rounded-xl border border-indigo-200 bg-white px-3 text-xs font-bold dark:bg-slate-900"
-                      />
-                      <select
-                        value={editCategory}
-                        onChange={(e) => setEditCategory(e.target.value as CategorySlug)}
-                        className="h-9 rounded-xl border border-indigo-200 bg-white px-2.5 text-xs font-bold dark:bg-slate-900"
-                      >
-                        {SYSTEM_CATEGORIES.map((c) => (
-                          <option key={c.slug} value={c.slug}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="number"
-                        value={editAmount}
-                        onChange={(e) => setEditAmount(e.target.value)}
-                        className="h-9 w-28 rounded-xl border border-indigo-200 bg-white px-3 font-mono text-xs font-bold tabular-nums dark:bg-slate-900"
-                      />
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => saveInlineEdit(tx.id)}
-                          className="h-9 rounded-xl bg-emerald-600 px-3 text-xs font-extrabold text-white"
-                        >
-                          Lưu
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditingId(null)}
-                          className="h-9 rounded-xl border border-slate-300 bg-white px-2.5 text-xs font-bold text-slate-600"
-                        >
-                          Hủy
-                        </button>
-                      </div>
-                    </div>
-                  );
-                }
-
-                return (
-                  <div
-                    key={tx.id}
-                    className="group flex items-center justify-between gap-3 rounded-2xl px-2 py-3.5 transition hover:bg-indigo-50/30 dark:hover:bg-white/[0.02]"
-                  >
-                    <div className="flex min-w-0 items-center gap-3.5">
-                      <CategoryIcon slug={tx.categorySlug} size="md" />
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="truncate text-sm font-bold text-slate-900 dark:text-white">
-                            {tx.description}
-                          </span>
-                          <span
-                            className="rounded-full px-2 py-0.5 text-[10px] font-bold"
-                            style={{
-                              backgroundColor: `${cat.color}18`,
-                              color: cat.color,
-                            }}
-                          >
-                            {cat.name}
-                          </span>
-                        </div>
-                        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-                          <span>
-                            {new Date(tx.transactionDate).toLocaleString('vi-VN', {
-                              day: '2-digit',
-                              month: '2-digit',
-                              year: 'numeric',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={`font-mono text-sm font-extrabold tabular-nums ${
-                          tx.type === 'income'
-                            ? 'text-emerald-600 dark:text-emerald-400'
-                            : 'text-rose-600 dark:text-rose-400'
-                        }`}
-                      >
-                        {tx.type === 'income' ? '+' : '−'}
-                        {formatVndNumber(tx.amount)} ₫
-                      </span>
-
-                      <div className="flex items-center gap-1 opacity-85 transition group-hover:opacity-100">
-                        <button
-                          type="button"
-                          onClick={() => startInlineEdit(tx)}
-                          className="rounded-lg p-1.5 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-slate-800"
-                          title="Chỉnh sửa giao dịch"
-                        >
-                          <Edit3 className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onDeleteTransaction(tx.id)}
-                          className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-slate-800"
-                          title="Xóa giao dịch"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
+                      {group.netTotal >= 0 ? '+' : '−'}
+                      {formatVndNumber(Math.abs(group.netTotal))} ₫
+                    </span>
                   </div>
-                );
-              })
+
+                  <div className="divide-y divide-indigo-100/50 dark:divide-white/[0.06]">
+                    {group.items.map((tx) => {
+                      const cat =
+                        CATEGORY_BY_SLUG[tx.categorySlug] || CATEGORY_BY_SLUG['khac'];
+                      const isEditing = editingId === tx.id;
+
+                      if (isEditing) {
+                        return (
+                          <div
+                            key={tx.id}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-indigo-50/50 px-3 py-3 dark:bg-indigo-500/10"
+                          >
+                            <input
+                              type="text"
+                              value={editDesc}
+                              onChange={(e) => setEditDesc(e.target.value)}
+                              className="h-10 min-w-[150px] flex-1 rounded-xl border border-indigo-200 bg-white px-3 text-base font-bold dark:bg-slate-900 sm:text-xs"
+                            />
+                            <select
+                              value={editCategory}
+                              onChange={(e) =>
+                                setEditCategory(e.target.value as CategorySlug)
+                              }
+                              className="h-10 rounded-xl border border-indigo-200 bg-white px-2.5 text-xs font-bold dark:bg-slate-900"
+                            >
+                              {SYSTEM_CATEGORIES.map((c) => (
+                                <option key={c.slug} value={c.slug}>
+                                  {c.name}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              type="number"
+                              inputMode="numeric"
+                              value={editAmount}
+                              onChange={(e) => setEditAmount(e.target.value)}
+                              className="h-10 w-28 rounded-xl border border-indigo-200 bg-white px-3 font-mono text-base font-bold tabular-nums dark:bg-slate-900 sm:text-xs"
+                            />
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => saveInlineEdit(tx.id)}
+                                className="h-10 rounded-xl bg-emerald-600 px-3 text-xs font-extrabold text-white"
+                              >
+                                Lưu
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingId(null)}
+                                className="h-10 rounded-xl border border-slate-300 bg-white px-2.5 text-xs font-bold text-slate-600"
+                              >
+                                Hủy
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={tx.id}
+                          className="group flex items-center justify-between gap-2.5 rounded-2xl px-2 py-3 transition hover:bg-indigo-50/30 dark:hover:bg-white/[0.02]"
+                        >
+                          <div className="flex min-w-0 items-center gap-3">
+                            <CategoryIcon slug={tx.categorySlug} size="md" />
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-bold text-slate-900 dark:text-white">
+                                {tx.description}
+                              </div>
+                              <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
+                                <span
+                                  className="rounded-full px-2 py-0.5 text-[10px] font-bold"
+                                  style={{
+                                    backgroundColor: `${cat.color}18`,
+                                    color: cat.color,
+                                  }}
+                                >
+                                  {cat.name}
+                                </span>
+                                <span>
+                                  {new Date(tx.transactionDate).toLocaleTimeString(
+                                    'vi-VN',
+                                    {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    }
+                                  )}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span
+                              className={`font-mono text-sm font-extrabold tabular-nums ${
+                                tx.type === 'income'
+                                  ? 'text-emerald-600 dark:text-emerald-400'
+                                  : 'text-rose-600 dark:text-rose-400'
+                              }`}
+                            >
+                              {hideBalance
+                                ? '••••• ₫'
+                                : `${tx.type === 'income' ? '+' : '−'}${formatVndNumber(
+                                    tx.amount
+                                  )} ₫`}
+                            </span>
+
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                type="button"
+                                onClick={() => startInlineEdit(tx)}
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-slate-800"
+                                title="Sửa"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onDeleteTransaction(tx.id)}
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-slate-800"
+                                title="Xóa"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
             )}
           </div>
         </div>
       </div>
+
+      {/* =====================================================================
+          RESPONSIVE MANUAL TRANSACTION SHEET / MODAL (Mobile Thumb-Friendly)
+         ===================================================================== */}
+      {manualModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 backdrop-blur-sm sm:items-center sm:p-4">
+          <form
+            onSubmit={handleManualSubmit}
+            className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-3xl border border-indigo-200 bg-white p-5 pb-safe shadow-2xl dark:border-indigo-500/30 dark:bg-[#111829] sm:rounded-3xl sm:p-6 space-y-4"
+          >
+            <div className="mx-auto mb-1 h-1.5 w-12 rounded-full bg-slate-200 dark:bg-slate-700 sm:hidden" />
+
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-white/10">
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                  Ghi giao dịch thủ công
+                </h3>
+                <p className="text-[11px] font-semibold text-slate-400">
+                  Vào ví: {activeWallet.name}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onSetManualModalOpen(false)}
+                className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-300"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Type Switch */}
+            <div className="grid grid-cols-2 rounded-2xl border border-indigo-100 bg-slate-100/90 p-1 dark:border-indigo-500/20 dark:bg-slate-900">
+              <button
+                type="button"
+                onClick={() => {
+                  setManualType('expense');
+                  if (manualCategory === 'thu-nhap') setManualCategory('an-uong');
+                }}
+                className={`h-10 rounded-xl text-xs font-extrabold transition ${
+                  manualType === 'expense'
+                    ? 'bg-rose-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                Khoản Chi tiêu
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setManualType('income');
+                  setManualCategory('thu-nhap');
+                }}
+                className={`h-10 rounded-xl text-xs font-extrabold transition ${
+                  manualType === 'income'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                Khoản Thu nhập
+              </button>
+            </div>
+
+            {/* Numeric Amount + Quick Denominations */}
+            <div>
+              <label className="mb-1 block text-xs font-bold text-slate-700 dark:text-slate-300">
+                Số tiền (VNĐ) *
+              </label>
+              <input
+                type="number"
+                inputMode="numeric"
+                required
+                min="1000"
+                step="1000"
+                value={manualAmount}
+                onChange={(e) => setManualAmount(e.target.value)}
+                placeholder="VD: 50000"
+                className="h-12 w-full rounded-2xl border border-indigo-200 bg-slate-50 px-4 font-mono text-xl font-black text-slate-900 outline-none focus:border-indigo-500 focus:bg-white dark:border-indigo-500/30 dark:bg-slate-900 dark:text-white"
+              />
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {MANUAL_QUICK_AMOUNTS.map((amt) => (
+                  <button
+                    key={amt}
+                    type="button"
+                    onClick={() => setManualAmount(String(amt))}
+                    className="rounded-xl border border-indigo-100 bg-indigo-50/70 px-2.5 py-1.5 font-mono text-xs font-extrabold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/25 dark:bg-indigo-500/10 dark:text-indigo-200"
+                  >
+                    {formatVndNumber(amt)}đ
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Description & Date */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="sm:col-span-2">
+                <label className="mb-1 block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Nội dung / Mô tả *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={manualDesc}
+                  onChange={(e) => setManualDesc(e.target.value)}
+                  placeholder="VD: Ăn trưa, Đổ xăng, Nhận lương..."
+                  className="h-11 w-full rounded-2xl border border-indigo-200 bg-slate-50 px-3.5 text-base font-semibold text-slate-900 outline-none focus:border-indigo-500 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-white sm:text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Ngày giao dịch
+                </label>
+                <input
+                  type="date"
+                  value={manualDate}
+                  onChange={(e) => setManualDate(e.target.value)}
+                  className="h-11 w-full rounded-2xl border border-indigo-200 bg-slate-50 px-3 text-sm font-bold text-slate-900 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-white"
+                />
+              </div>
+            </div>
+
+            {/* Tactile Visual Category Pill Picker (Way nicer on mobile than native select) */}
+            {manualType === 'expense' && (
+              <div>
+                <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Chọn danh mục chi tiêu
+                </label>
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+                  {SYSTEM_CATEGORIES.filter((c) => c.slug !== 'thu-nhap').map((cat) => {
+                    const active = manualCategory === cat.slug;
+                    return (
+                      <button
+                        key={cat.slug}
+                        type="button"
+                        onClick={() => setManualCategory(cat.slug)}
+                        className={`flex flex-col items-center gap-1 rounded-2xl border p-2 text-center transition ${
+                          active
+                            ? 'border-indigo-600 bg-indigo-50/90 ring-2 ring-indigo-500/20 dark:border-indigo-400 dark:bg-indigo-500/20'
+                            : 'border-slate-100 bg-slate-50/60 hover:border-indigo-200 dark:border-white/10 dark:bg-white/[0.03]'
+                        }`}
+                      >
+                        <CategoryIcon slug={cat.slug} size="sm" />
+                        <span className="line-clamp-1 text-[10px] font-bold text-slate-700 dark:text-slate-200">
+                          {cat.name}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={savingManual}
+              className="h-12 w-full rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-sm font-extrabold text-white shadow-lg shadow-indigo-500/25 hover:brightness-105"
+            >
+              {savingManual ? 'Đang lưu...' : 'Xác nhận lưu giao dịch'}
+            </button>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

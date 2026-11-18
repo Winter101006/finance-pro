@@ -34,7 +34,8 @@ const EXPENSE_ARRAY_SCHEMA = {
     properties: {
       amount: {
         type: Type.INTEGER,
-        description: 'Số tiền tính bằng VNĐ nguyên (ví dụ: 45k -> 45000, 1 trăm rưỡi -> 150000, nửa củ -> 500000, 3 lít -> 300000, 2 củ rưỡi -> 2500000).',
+        description:
+          'Số tiền tính bằng VNĐ nguyên (ví dụ: 45k -> 45000, 1 trăm rưỡi -> 150000, nửa củ -> 500000, 3 lít -> 300000, 2 củ rưỡi -> 2500000).',
       },
       type: {
         type: Type.STRING,
@@ -52,15 +53,21 @@ const EXPENSE_ARRAY_SCHEMA = {
       spokenConfirmationVi: {
         type: Type.STRING,
         description:
-          'Câu xác nhận tiếng Việt lễ phép để đọc cho người lớn tuổi nghe (ví dụ: "Đã ghi 150.000 đồng mua thịt bò vào mục Đi chợ").',
+          'Câu xác nhận tiếng Việt ngắn gọn rõ ràng (ví dụ: "Đã ghi 150.000 đồng mua thịt bò vào mục Đi chợ").',
       },
     },
     required: ['amount', 'type', 'categorySlug', 'description', 'spokenConfirmationVi'],
-    propertyOrdering: ['amount', 'type', 'categorySlug', 'description', 'spokenConfirmationVi'],
+    propertyOrdering: [
+      'amount',
+      'type',
+      'categorySlug',
+      'description',
+      'spokenConfirmationVi',
+    ],
   },
 };
 
-const SYSTEM_PROMPT = `Bạn là trợ lý kế toán gia đình thông minh tại Việt Nam.
+const SYSTEM_PROMPT = `Bạn là trợ lý tài chính cá nhân thông minh tại Việt Nam.
 Nhiệm vụ: Bóc tách câu nói tiếng Việt đời thường thành danh sách các khoản thu/chi chuẩn xác.
 Quy tắc quy đổi tiền tiếng Việt bắt buộc:
 - "k", "nghìn", "ngàn", "cành" = nhân 1.000 (VD: "45k" = 45000, "850 nghìn" = 850000).
@@ -70,26 +77,43 @@ Quy tắc quy đổi tiền tiếng Việt bắt buộc:
 - Nếu người dùng nói nhiều khoản trong 1 câu (VD: "sáng mua rau 35 nghìn với mua thịt bò 1 trăm rưỡi"), phải tách thành 2 phần tử riêng biệt trong mảng JSON.
 - Chọn đúng categorySlug trong 10 mã: "an-uong", "di-cho", "di-chuyen", "hoa-don", "hoc-tap", "mua-sam", "suc-khoe", "gia-dinh", "thu-nhap", "khac".`;
 
-interface WorkingClientCache {
-  mode: 'vertex-express' | 'developer-interactions' | 'developer-models';
-  model: string;
+const PARSE_CACHE = new Map<string, ParseExpenseResponse>();
+const MAX_CACHE_ENTRIES = 120;
+
+// Short circuit-breaker timestamp if upstream Gemini times out or is rate-limited
+let aiCooldownUntil = 0;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Gemini timeout')), ms);
+    promise.then(
+      (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
 }
 
-let cachedStrategy: WorkingClientCache | null = null;
-
-function sanitizeAiItems(rawItems: unknown, fallbackText: string, nowIso: string): ParsedExpenseItem[] {
+function sanitizeAiItems(
+  rawItems: unknown,
+  fallbackText: string,
+  nowIso: string
+): ParsedExpenseItem[] {
   if (!Array.isArray(rawItems) || rawItems.length === 0) {
     return [];
   }
 
-  // Also run local parser to cross-check slang multipliers if needed
   const localItems = parseVietnameseExpenseText(fallbackText, nowIso);
 
   const valid: ParsedExpenseItem[] = [];
   for (let i = 0; i < rawItems.length; i++) {
     const row = rawItems[i] as Record<string, unknown>;
     let amount = Number(row?.amount) || 0;
-    // If AI returned unscaled small number (e.g. 150 instead of 150000), fix from local parser or scale by 1000
     if (amount > 0 && amount < 1000) {
       amount = localItems[i]?.amount || amount * 1000;
     }
@@ -100,7 +124,7 @@ function sanitizeAiItems(rawItems: unknown, fallbackText: string, nowIso: string
 
     const description =
       typeof row?.description === 'string' && row.description.trim()
-        ? row.description.trim()
+        ? row.description.trim().slice(0, 180)
         : localItems[i]?.description || 'Chi tiêu phát sinh';
 
     const inferred = classifyVietnameseCategory(description);
@@ -113,7 +137,8 @@ function sanitizeAiItems(rawItems: unknown, fallbackText: string, nowIso: string
       row?.type === 'income' || categorySlug === 'thu-nhap' ? 'income' : 'expense';
 
     const spokenConfirmationVi =
-      typeof row?.spokenConfirmationVi === 'string' && row.spokenConfirmationVi.trim().length > 10
+      typeof row?.spokenConfirmationVi === 'string' &&
+      row.spokenConfirmationVi.trim().length > 10
         ? row.spokenConfirmationVi.trim()
         : buildSpokenConfirmationVi(amount, description, categorySlug, type);
 
@@ -131,9 +156,9 @@ function sanitizeAiItems(rawItems: unknown, fallbackText: string, nowIso: string
 }
 
 /**
- * Smart Dual-Mode Gemini + Vietnamese NLP Expense Parser.
- * Automatically handles "AQ." Vertex AI Express keys, standard Gemini Developer keys,
- * and falls back seamlessly to the deterministic Vietnamese NLP parser.
+ * Low-latency Smart Dual-Mode Gemini + Vietnamese NLP Expense Parser.
+ * - Uses memory LRU cache for < 1ms repeated utterances
+ * - Hard 2,500ms wall-clock budget with circuit breaker so mobile users NEVER experience 10s+ stalls
  */
 export async function parseExpenseWithGeminiOrFallback(
   rawInput: string
@@ -144,104 +169,65 @@ export async function parseExpenseWithGeminiOrFallback(
   if (!cleaned) {
     return {
       items: [],
-      spokenSummaryVi: 'Xin vui lòng nói hoặc nhập nội dung chi tiêu.',
+      spokenSummaryVi: 'Xin vui lòng nói hoặc nhập nội dung thu chi.',
       engine: 'vietnamese-local-nlp',
     };
   }
 
+  const cacheKey = cleaned.toLowerCase();
+  const cached = PARSE_CACHE.get(cacheKey);
+  if (cached) {
+    return {
+      ...cached,
+      items: cached.items.map((item) => ({ ...item, transactionDate: nowIso })),
+    };
+  }
+
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+  const nowMs = Date.now();
 
-  if (apiKey) {
-    const isVertexExpressKey = apiKey.startsWith('AQ.');
+  if (apiKey && nowMs >= aiCooldownUntil) {
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-3.5-flash-lite',
+          contents: `${SYSTEM_PROMPT}\n\nCâu nói của người dùng: "${cleaned}"`,
+          config: {
+            responseMimeType: 'application/json',
+            responseJsonSchema: EXPENSE_ARRAY_SCHEMA,
+            temperature: 0.1,
+          },
+        }),
+        2500
+      );
 
-    // Candidate strategies ordered by verified live response speed & reliability:
-    // 1. Developer API with gemini-3.5-flash-lite & gemini-3.8-flash (works immediately with AQ. key on generativelanguage.googleapis.com)
-    // 2. Vertex AI Express mode (vertexai: true) if Vertex AI API is enabled on the Google Cloud project
-    const candidates: WorkingClientCache[] = cachedStrategy
-      ? [cachedStrategy]
-      : [
-          { mode: 'developer-models', model: 'gemini-3.5-flash-lite' },
-          { mode: 'developer-models', model: 'gemini-3.8-flash' },
-          { mode: 'developer-interactions', model: 'gemini-3.5-flash-lite' },
-          ...(isVertexExpressKey
-            ? [
-                { mode: 'vertex-express' as const, model: 'gemini-3.5-flash-lite' },
-                { mode: 'vertex-express' as const, model: 'gemini-2.5-flash' },
-              ]
-            : []),
-        ];
-
-    for (const candidate of candidates) {
-      try {
-        if (candidate.mode === 'developer-interactions') {
-          const ai = new GoogleGenAI({ apiKey });
-          const interaction = await ai.interactions.create({
-            model: candidate.model,
-            system_instruction: SYSTEM_PROMPT,
-            input: `Bóc tách câu chi tiêu sau thành JSON mảng: "${cleaned}"`,
-            response_format: {
-              type: 'text',
-              mime_type: 'application/json',
-            } as unknown as Record<string, unknown>,
-          });
-          const text = interaction.output_text || '';
-          const parsedJson = JSON.parse(text);
-          const items = sanitizeAiItems(
-            Array.isArray(parsedJson) ? parsedJson : parsedJson?.items,
-            cleaned,
-            nowIso
-          );
-          if (items.length > 0) {
-            cachedStrategy = candidate;
-            return {
-              items,
-              spokenSummaryVi: buildSpokenSummaryVi(items),
-              engine: 'gemini-developer-api',
-              modelUsed: candidate.model,
-            };
-          }
-        } else {
-          const ai =
-            candidate.mode === 'vertex-express'
-              ? new GoogleGenAI({ vertexai: true, apiKey })
-              : new GoogleGenAI({ apiKey });
-
-          const response = await ai.models.generateContent({
-            model: candidate.model,
-            contents: `${SYSTEM_PROMPT}\n\nCâu nói của người dùng: "${cleaned}"`,
-            config: {
-              responseMimeType: 'application/json',
-              responseJsonSchema: EXPENSE_ARRAY_SCHEMA,
-              temperature: 0.1,
-            },
-          });
-
-          const text = response.text || '';
-          const parsedJson = JSON.parse(text);
-          const items = sanitizeAiItems(parsedJson, cleaned, nowIso);
-          if (items.length > 0) {
-            cachedStrategy = candidate;
-            return {
-              items,
-              spokenSummaryVi: buildSpokenSummaryVi(items),
-              engine:
-                candidate.mode === 'vertex-express'
-                  ? 'gemini-vertex-express'
-                  : 'gemini-developer-api',
-              modelUsed: candidate.model,
-            };
-          }
+      const text = response.text || '';
+      const parsedJson = JSON.parse(text);
+      const items = sanitizeAiItems(parsedJson, cleaned, nowIso);
+      if (items.length > 0) {
+        const res: ParseExpenseResponse = {
+          items,
+          spokenSummaryVi: buildSpokenSummaryVi(items),
+          engine: 'gemini-developer-api',
+          modelUsed: 'gemini-3.5-flash-lite',
+        };
+        if (PARSE_CACHE.size >= MAX_CACHE_ENTRIES) {
+          const firstKey = PARSE_CACHE.keys().next().value;
+          if (firstKey) PARSE_CACHE.delete(firstKey);
         }
-      } catch {
-        // Try next candidate strategy or fallback to local Vietnamese NLP parser
+        PARSE_CACHE.set(cacheKey, res);
+        return res;
       }
+    } catch {
+      // Trip short 30s circuit breaker so subsequent utterances serve instantaneously in <1ms
+      aiCooldownUntil = Date.now() + 30_000;
     }
   }
 
-  // Deterministic Local Vietnamese NLP Fallback (< 1ms latency, 100% offline-resilient)
+  // Deterministic Local Vietnamese NLP Fallback (< 1ms latency)
   const fallbackItems = parseVietnameseExpenseText(cleaned, nowIso);
 
-  // Ensure every categorySlug maps to a valid category
   const normalizedFallback = fallbackItems.map((item) => ({
     ...item,
     categorySlug: (item.categorySlug in CATEGORY_BY_SLUG
@@ -249,10 +235,20 @@ export async function parseExpenseWithGeminiOrFallback(
       : 'khac') as CategorySlug,
   }));
 
-  return {
+  const fallbackRes: ParseExpenseResponse = {
     items: normalizedFallback,
     spokenSummaryVi: buildSpokenSummaryVi(normalizedFallback),
     engine: 'vietnamese-local-nlp',
-    modelUsed: 'vietnamese-regex-nlp-v2',
+    modelUsed: 'vietnamese-regex-nlp-v3',
   };
+
+  if (normalizedFallback.length > 0) {
+    if (PARSE_CACHE.size >= MAX_CACHE_ENTRIES) {
+      const firstKey = PARSE_CACHE.keys().next().value;
+      if (firstKey) PARSE_CACHE.delete(firstKey);
+    }
+    PARSE_CACHE.set(cacheKey, fallbackRes);
+  }
+
+  return fallbackRes;
 }

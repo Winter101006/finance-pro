@@ -218,7 +218,6 @@ set search_path = public
 as $$
 declare
   personal_wallet_id uuid;
-  family_wallet_id uuid;
   user_name text;
   initial_mode text;
 begin
@@ -229,17 +228,11 @@ begin
   values (new.id, user_name, initial_mode);
 
   insert into public.wallets (name, type, owner_id, monthly_budget, weekly_budget)
-  values ('Ví Cá Nhân (' || user_name || ')', 'personal', new.id, 6000000, 1500000)
+  values ('Ví Cá Nhân', 'personal', new.id, 0, 0)
   returning id into personal_wallet_id;
 
-  insert into public.wallets (name, type, owner_id, monthly_budget, weekly_budget)
-  values ('Ví Chung Gia Đình', 'family', new.id, 15000000, 3800000)
-  returning id into family_wallet_id;
-
   insert into public.wallet_members (wallet_id, user_id, role)
-  values
-    (personal_wallet_id, new.id, 'owner'),
-    (family_wallet_id, new.id, 'owner');
+  values (personal_wallet_id, new.id, 'owner');
 
   update public.profiles
   set default_wallet_id = personal_wallet_id

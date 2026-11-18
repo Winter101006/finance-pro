@@ -2,6 +2,8 @@
 
 import {
   CheckCircle2,
+  Eye,
+  EyeOff,
   Keyboard,
   Loader2,
   Mic,
@@ -14,7 +16,7 @@ import {
 import { useMemo, useState } from 'react';
 import { CATEGORY_BY_SLUG } from '@/data/categories';
 import { formatVndNumber } from '@/lib/vietnameseParser';
-import type { FinanceTransaction, Wallet } from '@/types/finance';
+import type { FinanceTransaction, TransactionType, Wallet } from '@/types/finance';
 import { CategoryIcon } from './CategoryIcon';
 
 interface SeniorModeViewProps {
@@ -23,6 +25,7 @@ interface SeniorModeViewProps {
   onSelectWallet: (walletId: string) => void;
   transactions: FinanceTransaction[];
   onSubmitNaturalInput: (text: string) => Promise<void>;
+  onOpenVoiceSheet: () => void;
   isParsing: boolean;
   lastAddedBatch: {
     ids: string[];
@@ -37,7 +40,7 @@ interface SeniorModeViewProps {
 const SIMPLE_QUICK_PHRASES = [
   'Ăn sáng 45 nghìn',
   'Đổ xăng 70 nghìn',
-  'Mua đồ ăn 150 nghìn',
+  'Đi chợ mua đồ ăn 150 nghìn',
   'Đóng tiền điện nước 850 nghìn',
 ];
 
@@ -55,83 +58,24 @@ export function SeniorModeView({
   onSelectWallet,
   transactions,
   onSubmitNaturalInput,
+  onOpenVoiceSheet,
   isParsing,
   lastAddedBatch,
   onUndoLastBatch,
   onDeleteTransaction,
   onSpeakVietnamese,
 }: SeniorModeViewProps) {
-  const [isListening, setIsListening] = useState(false);
-  const [heardTranscript, setHeardTranscript] = useState('');
+  const [hideBalance, setHideBalance] = useState(false);
   const [showKeyboard, setShowKeyboard] = useState(false);
+  const [manualType, setManualType] = useState<TransactionType>('expense');
   const [manualItem, setManualItem] = useState('Ăn uống hàng ngày');
   const [manualAmount, setManualAmount] = useState<number>(50000);
-
-  // Start Web Speech API (vi-VN)
-  const handleStartVoiceRecording = () => {
-    if (typeof window === 'undefined') return;
-    const SpeechRec =
-      (window as unknown as Record<string, unknown>).SpeechRecognition ||
-      (window as unknown as Record<string, unknown>).webkitSpeechRecognition;
-
-    if (!SpeechRec) {
-      setShowKeyboard(true);
-      onSpeakVietnamese(
-        'Thiết bị này chưa bật micro, bạn có thể nhập nhanh bằng bàn phím bên dưới.'
-      );
-      return;
-    }
-
-    if (isListening) {
-      setIsListening(false);
-      return;
-    }
-
-    const recognition = new (SpeechRec as new () => {
-      lang: string;
-      interimResults: boolean;
-      maxAlternatives: number;
-      onresult: (event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void;
-      onerror: () => void;
-      onend: () => void;
-      start: () => void;
-    })();
-
-    recognition.lang = 'vi-VN';
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-
-    setHeardTranscript('');
-    setIsListening(true);
-
-    recognition.onresult = async (event) => {
-      const lastIdx = event.results.length - 1;
-      const text = event.results[lastIdx]?.[0]?.transcript || '';
-      setHeardTranscript(text);
-    };
-
-    recognition.onerror = () => {
-      setIsListening(false);
-    };
-
-    recognition.onend = async () => {
-      setIsListening(false);
-    };
-
-    recognition.start();
-  };
-
-  const handleConfirmHeardVoice = async () => {
-    if (!heardTranscript.trim() || isParsing) return;
-    const text = heardTranscript.trim();
-    setHeardTranscript('');
-    await onSubmitNaturalInput(text);
-  };
 
   const handleManualKeyboardSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualItem.trim() || manualAmount <= 0 || isParsing) return;
-    const sentence = `${manualItem.trim()} ${manualAmount} đồng`;
+    const prefix = manualType === 'income' ? 'Nhận thu nhập ' : '';
+    const sentence = `${prefix}${manualItem.trim()} ${manualAmount} đồng`;
     await onSubmitNaturalInput(sentence);
     setShowKeyboard(false);
   };
@@ -164,36 +108,46 @@ export function SeniorModeView({
   }, [transactions]);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 pb-20">
+    <div className="mx-auto max-w-3xl space-y-5 pb-28 lg:pb-16">
       {/* 1. CLEAN SUMMARY HEADER CARD */}
-      <div className="rounded-3xl border border-indigo-200/80 bg-white p-6 shadow-[0_12px_36px_rgb(79,70,229,0.08)] dark:border-indigo-500/25 dark:bg-[#131B2E] space-y-4">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-extrabold text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/15 dark:text-indigo-300">
-              <Sparkles className="h-3.5 w-3.5" />
-              <span>Giao diện Đơn giản · Thao tác nhanh</span>
+      <div className="space-y-4 rounded-3xl border border-indigo-200/80 bg-white p-5 shadow-[0_12px_36px_rgb(79,70,229,0.08)] dark:border-indigo-500/25 dark:bg-[#131B2E] sm:p-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <div className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-extrabold text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/15 dark:text-indigo-300">
+                <Sparkles className="h-3.5 w-3.5" />
+                <span>Giao diện Đơn giản · Thao tác nhanh</span>
+              </div>
+              <h1 className="mt-2 text-xl font-black tracking-tight text-slate-900 dark:text-white sm:text-2xl">
+                {activeWallet.name}
+              </h1>
             </div>
-            <h1 className="mt-2 text-2xl font-black tracking-tight text-slate-900 dark:text-white">
-              {activeWallet.name}
-            </h1>
+
+            <button
+              type="button"
+              onClick={() => setHideBalance((v) => !v)}
+              className="inline-flex h-9 items-center gap-1 rounded-xl border border-indigo-100 bg-slate-50 px-2.5 text-xs font-bold text-slate-600 dark:border-white/10 dark:bg-slate-800 dark:text-slate-300 sm:hidden"
+            >
+              {hideBalance ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+            </button>
           </div>
 
-          <div className="flex flex-wrap gap-3">
+          <div className="grid grid-cols-2 gap-2.5 sm:flex sm:flex-wrap sm:gap-3">
             <div className="rounded-2xl border border-rose-200 bg-rose-50/80 px-4 py-2.5 dark:border-rose-500/25 dark:bg-rose-950/30">
-              <div className="text-xs font-bold text-rose-700 dark:text-rose-300">
+              <div className="text-[11px] font-bold text-rose-700 dark:text-rose-300 sm:text-xs">
                 Chi hôm nay
               </div>
-              <div className="font-mono text-xl font-black tabular-nums text-rose-700 dark:text-rose-300">
-                {formatVndNumber(summaryStats.totalSpentToday)} ₫
+              <div className="font-mono text-lg font-black tabular-nums text-rose-700 dark:text-rose-300 sm:text-xl">
+                {hideBalance ? '••••• ₫' : `${formatVndNumber(summaryStats.totalSpentToday)} ₫`}
               </div>
             </div>
 
             <div className="rounded-2xl border border-indigo-200 bg-indigo-50/80 px-4 py-2.5 dark:border-indigo-500/25 dark:bg-indigo-950/30">
-              <div className="text-xs font-bold text-indigo-700 dark:text-indigo-300">
+              <div className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 sm:text-xs">
                 Số dư hiện tại
               </div>
-              <div className="font-mono text-xl font-black tabular-nums text-indigo-800 dark:text-indigo-200">
-                {formatVndNumber(summaryStats.balance)} ₫
+              <div className="font-mono text-lg font-black tabular-nums text-indigo-800 dark:text-indigo-200 sm:text-xl">
+                {hideBalance ? '••••• ₫' : `${formatVndNumber(summaryStats.balance)} ₫`}
               </div>
             </div>
           </div>
@@ -201,8 +155,8 @@ export function SeniorModeView({
 
         {/* Wallet Selector if user has multiple personal wallets */}
         {wallets.length > 1 && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-indigo-100 pt-3 dark:border-indigo-500/20">
-            <span className="text-xs font-bold text-slate-500 mr-1">Đổi ví:</span>
+          <div className="flex items-center gap-2 overflow-x-auto border-t border-indigo-100 pt-3 pb-0.5 no-scrollbar dark:border-indigo-500/20">
+            <span className="shrink-0 text-xs font-bold text-slate-500">Đổi ví:</span>
             {wallets.map((w) => {
               const active = w.id === activeWallet.id;
               return (
@@ -210,7 +164,7 @@ export function SeniorModeView({
                   key={w.id}
                   type="button"
                   onClick={() => onSelectWallet(w.id)}
-                  className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-extrabold transition ${
+                  className={`inline-flex shrink-0 items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-extrabold transition ${
                     active
                       ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white shadow-sm'
                       : 'border border-indigo-100 bg-slate-50 text-slate-700 hover:bg-indigo-50 dark:border-indigo-500/20 dark:bg-slate-800 dark:text-slate-200'
@@ -225,79 +179,44 @@ export function SeniorModeView({
         )}
       </div>
 
-      {/* 2. FAST VOICE & KEYBOARD ENTRY CARD */}
-      <div className="rounded-3xl border border-indigo-200/80 bg-white p-6 sm:p-8 shadow-[0_12px_36px_rgb(79,70,229,0.08)] dark:border-indigo-500/25 dark:bg-[#131B2E] text-center space-y-5">
-        <p className="text-base font-bold text-slate-700 dark:text-slate-200 sm:text-lg">
-          Bấm nút bên dưới để đọc khoản thu/chi hoặc chọn nhập nhanh bằng bàn phím:
+      {/* 2. FAST VOICE STUDIO TRIGGER & KEYBOARD PANEL */}
+      <div className="space-y-5 rounded-3xl border border-indigo-200/80 bg-white p-5 text-center shadow-[0_12px_36px_rgb(79,70,229,0.08)] dark:border-indigo-500/25 dark:bg-[#131B2E] sm:p-8">
+        <p className="text-sm font-bold text-slate-700 dark:text-slate-200 sm:text-lg">
+          Bấm nút Micro để đọc thu/chi kèm sóng âm trực tiếp, hoặc nhập nhanh bằng bàn phím:
         </p>
 
         <button
           type="button"
-          onClick={handleStartVoiceRecording}
+          onClick={onOpenVoiceSheet}
           disabled={isParsing}
-          className={`flex min-h-[76px] w-full flex-col items-center justify-center gap-2.5 rounded-3xl px-6 py-5 text-xl font-black text-white shadow-lg transition active:scale-[0.99] sm:text-2xl ${
-            isListening
-              ? 'bg-rose-600 shadow-rose-500/30'
-              : 'bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 shadow-indigo-500/25 hover:brightness-105'
-          }`}
+          className="flex min-h-[76px] w-full flex-col items-center justify-center gap-2 rounded-3xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 px-6 py-5 text-lg font-black text-white shadow-xl shadow-indigo-500/25 transition hover:brightness-105 active:scale-[0.98] sm:text-2xl"
         >
           {isParsing ? (
             <div className="flex items-center gap-3">
               <Loader2 className="h-7 w-7 animate-spin" />
-              <span>Đang phân tích &amp; lưu...</span>
-            </div>
-          ) : isListening ? (
-            <div className="space-y-2">
-              <div className="flex items-center justify-center gap-3">
-                <Mic className="h-7 w-7 animate-bounce" />
-                <span>Đang lắng nghe giọng nói...</span>
-              </div>
-              <div className="flex items-center justify-center gap-1.5 pt-1">
-                <span className="h-3 w-1.5 animate-pulse rounded-full bg-white" />
-                <span className="h-6 w-1.5 animate-pulse rounded-full bg-amber-300" />
-                <span className="h-4 w-1.5 animate-pulse rounded-full bg-white" />
-                <span className="h-7 w-1.5 animate-pulse rounded-full bg-amber-300" />
-                <span className="h-3 w-1.5 animate-pulse rounded-full bg-white" />
-              </div>
+              <span>Đang lưu giao dịch...</span>
             </div>
           ) : (
             <div className="flex items-center justify-center gap-3">
               <Mic className="h-7 w-7 shrink-0" />
-              <span>Bấm để nói khoản thu / chi</span>
+              <span>Bấm để nói (Sóng âm trực tiếp)</span>
             </div>
           )}
         </button>
 
-        {/* Voice transcript confirmation */}
-        {heardTranscript && (
-          <div className="rounded-2xl border border-emerald-300 bg-emerald-50/90 p-5 text-left space-y-3 dark:border-emerald-500/30 dark:bg-emerald-950/40">
-            <div className="text-base font-bold text-emerald-900 dark:text-emerald-200">
-              Nội dung vừa nhận diện:{' '}
-              <span className="underline">“{heardTranscript}”</span>
-            </div>
-            <button
-              type="button"
-              onClick={handleConfirmHeardVoice}
-              className="min-h-[52px] w-full rounded-2xl bg-emerald-600 px-6 text-base font-extrabold text-white shadow-sm hover:bg-emerald-700"
-            >
-              Xác nhận &amp; Lưu ngay
-            </button>
-          </div>
-        )}
-
         {/* Quick 1-Tap Common Phrases */}
         <div className="pt-1 text-left">
-          <div className="text-xs font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2.5">
+          <div className="mb-2 text-xs font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400">
             Hoặc chạm 1 lần để ghi mẫu nhanh:
           </div>
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-2.5">
             {SIMPLE_QUICK_PHRASES.map((phrase) => (
               <button
                 key={phrase}
                 type="button"
                 disabled={isParsing}
                 onClick={() => onSubmitNaturalInput(phrase)}
-                className="flex min-h-[48px] items-center justify-between rounded-2xl border border-indigo-100 bg-indigo-50/60 px-4 py-2.5 text-left text-sm font-bold text-slate-800 transition hover:border-indigo-300 hover:bg-indigo-100/70 dark:border-indigo-500/20 dark:bg-white/[0.04] dark:text-slate-200"
+                className="flex min-h-[48px] items-center justify-between rounded-2xl border border-indigo-100 bg-indigo-50/60 px-4 py-2.5 text-left text-sm font-bold text-slate-800 transition hover:border-indigo-300 hover:bg-indigo-100/70 active:scale-[0.98] dark:border-indigo-500/20 dark:bg-white/[0.04] dark:text-slate-200"
               >
                 <span>“{phrase}”</span>
               </button>
@@ -309,20 +228,51 @@ export function SeniorModeView({
         <button
           type="button"
           onClick={() => setShowKeyboard((v) => !v)}
-          className="flex min-h-[54px] w-full items-center justify-center gap-2.5 rounded-2xl border-2 border-indigo-200 bg-slate-50 px-6 text-base font-extrabold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-500/30 dark:bg-slate-800/80 dark:text-indigo-200"
+          className="flex min-h-[52px] w-full items-center justify-center gap-2.5 rounded-2xl border-2 border-indigo-200 bg-slate-50 px-5 text-sm font-extrabold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-500/30 dark:bg-slate-800/80 dark:text-indigo-200 sm:text-base"
         >
           <Keyboard className="h-5 w-5 shrink-0" />
-          <span>{showKeyboard ? 'Đóng bàn phím nhập nhanh' : 'Nhập bằng bàn phím & Mệnh giá nhanh'}</span>
+          <span>
+            {showKeyboard ? 'Đóng bàn phím nhập nhanh' : 'Nhập bằng bàn phím & Mệnh giá'}
+          </span>
         </button>
 
         {/* Fast Keyboard Panel with Quick Denominations */}
         {showKeyboard && (
           <form
             onSubmit={handleManualKeyboardSubmit}
-            className="rounded-3xl border border-indigo-200 bg-slate-50/90 p-5 text-left space-y-4 dark:border-indigo-500/30 dark:bg-[#0B0F19]/90"
+            className="space-y-4 rounded-3xl border border-indigo-200 bg-slate-50/90 p-4 text-left dark:border-indigo-500/30 dark:bg-[#0B0F19]/90 sm:p-5"
           >
+            {/* Income / Expense Toggle */}
+            <div className="grid grid-cols-2 rounded-2xl border border-indigo-200 bg-white p-1 dark:border-indigo-500/30 dark:bg-slate-900">
+              <button
+                type="button"
+                onClick={() => setManualType('expense')}
+                className={`h-10 rounded-xl text-xs font-extrabold transition ${
+                  manualType === 'expense'
+                    ? 'bg-rose-600 text-white'
+                    : 'text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                Chi tiêu
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setManualType('income');
+                  setManualItem('Nhận lương / Thù lao');
+                }}
+                className={`h-10 rounded-xl text-xs font-extrabold transition ${
+                  manualType === 'income'
+                    ? 'bg-emerald-600 text-white'
+                    : 'text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                Thu nhập
+              </button>
+            </div>
+
             <div>
-              <label className="block text-sm font-extrabold text-slate-800 dark:text-slate-200 mb-2">
+              <label className="mb-2 block text-xs font-extrabold text-slate-800 dark:text-slate-200 sm:text-sm">
                 1. Nội dung thu / chi:
               </label>
               <div className="mb-2.5 flex flex-wrap gap-1.5">
@@ -332,12 +282,15 @@ export function SeniorModeView({
                   'Đổ xăng di chuyển',
                   'Đóng tiền điện nước',
                   'Mua sắm cá nhân',
-                  'Học tập & Sách vở',
+                  'Nhận lương / Thưởng',
                 ].map((preset) => (
                   <button
                     key={preset}
                     type="button"
-                    onClick={() => setManualItem(preset)}
+                    onClick={() => {
+                      setManualItem(preset);
+                      if (preset.includes('lương')) setManualType('income');
+                    }}
                     className={`rounded-xl border px-3 py-1.5 text-xs font-extrabold transition ${
                       manualItem === preset
                         ? 'border-indigo-600 bg-indigo-600 text-white'
@@ -357,10 +310,10 @@ export function SeniorModeView({
             </div>
 
             <div>
-              <label className="block text-sm font-extrabold text-slate-800 dark:text-slate-200 mb-2">
+              <label className="mb-2 block text-xs font-extrabold text-slate-800 dark:text-slate-200 sm:text-sm">
                 2. Số tiền (VNĐ):
               </label>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 mb-2.5">
+              <div className="mb-2.5 grid grid-cols-2 gap-2 sm:grid-cols-3">
                 {QUICK_DENOMINATIONS.map((den) => (
                   <button
                     key={den.value}
@@ -382,6 +335,7 @@ export function SeniorModeView({
 
               <input
                 type="number"
+                inputMode="numeric"
                 step="5000"
                 value={manualAmount}
                 onChange={(e) => setManualAmount(Number(e.target.value) || 0)}
@@ -404,14 +358,14 @@ export function SeniorModeView({
 
       {/* 3. CONFIRMATION BANNER + VOICE READBACK + 1-TAP UNDO */}
       {lastAddedBatch && (
-        <div className="rounded-3xl border border-emerald-300 bg-gradient-to-r from-emerald-50/95 to-teal-50/90 p-5 shadow-sm dark:border-emerald-500/30 dark:from-emerald-950/40 dark:to-teal-950/30 space-y-4">
+        <div className="space-y-3 rounded-3xl border border-emerald-300 bg-gradient-to-r from-emerald-50/95 to-teal-50/90 p-5 shadow-sm dark:border-emerald-500/30 dark:from-emerald-950/40 dark:to-teal-950/30">
           <div className="flex items-start gap-3">
             <CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-emerald-600" />
             <div>
               <div className="text-xs font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
                 Đã ghi nhận thành công
               </div>
-              <p className="mt-1 text-lg font-extrabold text-slate-900 dark:text-white">
+              <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white sm:text-lg">
                 “{lastAddedBatch.summary}”
               </p>
             </div>
@@ -421,7 +375,7 @@ export function SeniorModeView({
             <button
               type="button"
               onClick={() => onSpeakVietnamese(lastAddedBatch.summary)}
-              className="inline-flex flex-1 min-w-[160px] h-11 items-center justify-center gap-2 rounded-2xl border border-emerald-300 bg-white px-4 text-xs font-extrabold text-emerald-800 hover:bg-emerald-50 dark:border-emerald-500/30 dark:bg-slate-900 dark:text-emerald-200"
+              className="inline-flex h-11 min-w-[140px] flex-1 items-center justify-center gap-2 rounded-2xl border border-emerald-300 bg-white px-4 text-xs font-extrabold text-emerald-800 hover:bg-emerald-50 dark:border-emerald-500/30 dark:bg-slate-900 dark:text-emerald-200"
             >
               <Volume2 className="h-4 w-4 text-emerald-600" />
               <span>Nghe đọc lại</span>
@@ -430,7 +384,7 @@ export function SeniorModeView({
             <button
               type="button"
               onClick={onUndoLastBatch}
-              className="inline-flex flex-1 min-w-[160px] h-11 items-center justify-center gap-2 rounded-2xl bg-rose-600 px-4 text-xs font-extrabold text-white shadow-xs hover:bg-rose-700"
+              className="inline-flex h-11 min-w-[140px] flex-1 items-center justify-center gap-2 rounded-2xl bg-rose-600 px-4 text-xs font-extrabold text-white shadow-xs hover:bg-rose-700"
             >
               <Undo2 className="h-4 w-4" />
               <span>Hoàn tác ({lastAddedBatch.ids.length} khoản)</span>
@@ -440,7 +394,7 @@ export function SeniorModeView({
       )}
 
       {/* 4. RECENT 5 TRANSACTIONS */}
-      <div className="rounded-3xl border border-indigo-100 bg-white p-6 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E] space-y-4">
+      <div className="space-y-4 rounded-3xl border border-indigo-100 bg-white p-5 shadow-xs dark:border-indigo-500/20 dark:bg-[#131B2E] sm:p-6">
         <div className="flex items-center justify-between border-b border-indigo-100 pb-3 dark:border-indigo-500/20">
           <h2 className="text-base font-extrabold text-slate-900 dark:text-white">
             5 Giao Dịch Gần Nhất
@@ -500,8 +454,11 @@ export function SeniorModeView({
                           : 'text-rose-600 dark:text-rose-400'
                       }`}
                     >
-                      {tx.type === 'income' ? '+' : '−'}
-                      {formatVndNumber(tx.amount)} ₫
+                      {hideBalance
+                        ? '••••• ₫'
+                        : `${tx.type === 'income' ? '+' : '−'}${formatVndNumber(
+                            tx.amount
+                          )} ₫`}
                     </span>
 
                     <button

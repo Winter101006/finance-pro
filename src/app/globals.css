@@ -6,11 +6,13 @@
   html {
     scroll-behavior: smooth;
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    -webkit-tap-highlight-color: transparent;
   }
 
   body {
     background-color: #f4f7fb;
     color: #0f172a;
+    overscroll-behavior-y: contain;
   }
 
   .dark body {
@@ -19,15 +21,43 @@
   }
 }
 
+/* Smooth Gemini Aurora Ambient Mesh Background */
 .gemini-mesh-bg {
   background-image:
-    radial-gradient(at 15% 10%, rgba(56, 189, 248, 0.12) 0px, transparent 45%),
-    radial-gradient(at 85% 12%, rgba(139, 92, 246, 0.12) 0px, transparent 45%),
-    radial-gradient(at 50% 50%, rgba(99, 102, 241, 0.05) 0px, transparent 55%);
+    radial-gradient(at 15% 8%, rgba(56, 189, 248, 0.13) 0px, transparent 45%),
+    radial-gradient(at 85% 12%, rgba(139, 92, 246, 0.13) 0px, transparent 45%),
+    radial-gradient(at 50% 60%, rgba(99, 102, 241, 0.05) 0px, transparent 55%);
 }
 
 .dark .gemini-mesh-bg {
   background-image:
-    radial-gradient(at 15% 10%, rgba(56, 189, 248, 0.14) 0px, transparent 45%),
-    radial-gradient(at 85% 12%, rgba(139, 92, 246, 0.15) 0px, transparent 45%);
+    radial-gradient(at 15% 8%, rgba(56, 189, 248, 0.15) 0px, transparent 45%),
+    radial-gradient(at 85% 12%, rgba(139, 92, 246, 0.16) 0px, transparent 45%);
+}
+
+/* Hide scrollbars nicely for mobile horizontal chip strips */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Mobile bottom safe area padding helper */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+@keyframes floatSlow {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+.animate-float-slow {
+  animation: floatSlow 3.5s ease-in-out infinite;
 }

@@ -29,17 +29,25 @@ const VIETNAMESE_WORD_NUMBERS: Record<string, number> = {
 
 /**
  * Replaces spoken Vietnamese number words right before currency units with digits
- * e.g., "một trăm rưỡi" -> "1 trăm rưỡi", "ba lít" -> "3 lít", "hai củ rưỡi" -> "2 củ rưỡi"
+ * e.g., "một trăm rưỡi" -> "1 trăm rưỡi", "hai lăm nghìn" -> "25 nghìn"
  */
 export function normalizeVietnameseSpokenNumbers(input: string): string {
-  let s = input.trim();
+  let s = input.trim().normalize('NFC');
 
-  s = s.replace(/(^|\s)mười\s+lăm(?=\s|$)/gi, '$115');
+  // Compound spoken tens ("mười lăm", "hai mươi lăm", "hai lăm", "hai mươi")
+  s = s.replace(/(^|\s)mười\s+(một|hai|ba|bốn|tư|năm|lăm|sáu|bảy|bẩy|tám|chín)(?=\s|$)/gi, (_, prefix, unit) => {
+    const u = VIETNAMESE_WORD_NUMBERS[unit.toLowerCase()] || 0;
+    return `${prefix}${10 + u}`;
+  });
   s = s.replace(
-    /(^|\s)(hai|ba|bốn|năm|sáu|bảy|tám|chín)\s+mươi\s+lăm(?=\s|$)/gi,
-    (_, prefix, tens) => {
-      const t = VIETNAMESE_WORD_NUMBERS[tens.toLowerCase()] || 2;
-      return `${prefix}${t * 10 + 5}`;
+    /(^|\s)(hai|ba|bốn|năm|sáu|bảy|tám|chín)\s+(?:mươi\s+)?(mốt|một|hai|ba|bốn|tư|lăm|sáu|bảy|bẩy|tám|chín)(?=\s|$)/gi,
+    (full, prefix, tens, unit) => {
+      const t = VIETNAMESE_WORD_NUMBERS[tens.toLowerCase()];
+      const u = unit.toLowerCase() === 'mốt' ? 1 : VIETNAMESE_WORD_NUMBERS[unit.toLowerCase()];
+      if (t !== undefined && u !== undefined && unit.toLowerCase() !== 'lít' && unit.toLowerCase() !== 'trăm') {
+        return `${prefix}${t * 10 + u}`;
+      }
+      return full;
     }
   );
   s = s.replace(
@@ -50,9 +58,9 @@ export function normalizeVietnameseSpokenNumbers(input: string): string {
     }
   );
 
-  // Single number word before unit words (Unicode-safe boundaries)
+  // Normalize "một trăm 50 nghìn" -> "1 trăm 50 nghìn"
   const unitPattern =
-    '(?=\\s*(?:trăm|tram|nghìn|nghin|ngàn|ngan|triệu|trieu|củ|cu|lít|lit|xị|xi|chục|chuc|cành|canh|k(?:\\s|$)|đ(?:\\s|$)|đồng|dong))';
+    '(?=\\s*(?:trăm|tram|nghìn|nghin|ngàn|ngan|triệu|trieu|củ|cu|lít|lit|xị|xi|chục|chuc|cành|canh|k(?:\\s|$|[.,])|đ(?:\\s|$)|đồng|dong))';
   const wordKeys = Object.keys(VIETNAMESE_WORD_NUMBERS).join('|');
   const regex = new RegExp(`(^|[\\s,.;:()\\/-])(${wordKeys})${unitPattern}`, 'gi');
 
@@ -60,6 +68,15 @@ export function normalizeVietnameseSpokenNumbers(input: string): string {
     const val = VIETNAMESE_WORD_NUMBERS[word.toLowerCase()];
     return val !== undefined ? `${prefix}${val}` : full;
   });
+
+  // Also convert "trăm hai", "trăm 50" style remaining number word after trăm/triệu
+  s = s.replace(
+    /(trăm|tram|triệu|trieu|củ|cu|lít|lit)\s+(một|hai|ba|bốn|tư|năm|sáu|bảy|bẩy|tám|chín)(?=\s*(?:nghìn|ngàn|k|đồng|đ|$|[.,]))/gi,
+    (full, unitWord, numWord) => {
+      const val = VIETNAMESE_WORD_NUMBERS[numWord.toLowerCase()];
+      return val !== undefined ? `${unitWord} ${val}` : full;
+    }
+  );
 
   return s;
 }
@@ -73,13 +90,14 @@ export interface ExtractedAmountMatch {
 
 /**
  * Extracts all Vietnamese colloquial and formal money expressions in order of appearance.
- * Uses Unicode-aware boundaries instead of ASCII \b so accented Vietnamese words match reliably.
+ * Uses Unicode-aware boundaries so accented Vietnamese words match reliably.
  */
 export function extractVietnameseAmounts(rawText: string): ExtractedAmountMatch[] {
   const normalized = normalizeVietnameseSpokenNumbers(rawText);
 
   const B_START = '(?:^|(?<=[\\s,.;:!?()\\/-]))';
   const B_END = '(?=$|[\\s,.;:!?()\\/-])';
+  const OPT_K = '(?:\\s*(?:nghìn|nghin|ngàn|ngan|k|đồng|dong|đ))?';
 
   const combinedRegex = new RegExp(
     [
@@ -89,25 +107,26 @@ export function extractVietnameseAmounts(rawText: string): ExtractedAmountMatch[
       `(?<nuaLit>${B_START}nửa\\s*(?:lít|trăm)${B_END})`,
       // 3. "2 củ rưỡi", "2 triệu rưỡi", "2tr rưỡi" -> X.5 * 1,000,000
       `(?<cuRuoi>${B_START}\\d+(?:[.,]\\d+)?\\s*(?:củ|triệu|tr)\\s*rưỡi${B_END})`,
-      // 4. "2tr5", "2 củ 5", "2 triệu 500", "2 triệu 5" -> X * 1,000,000 + Y
-      `(?<cuLe>${B_START}\\d+\\s*(?:củ|triệu|tr)\\s*\\d{1,3}${B_END})`,
-      // 5. "2.5 triệu", "2,5 củ", "3 triệu", "1 củ"
+      // 4. "2tr5", "2 củ 5", "2 triệu 500", "1 triệu 250 nghìn" -> X * 1,000,000 + Y
+      `(?<cuLe>${B_START}\\d+\\s*(?:củ|triệu|tr)\\s*\\d{1,3}${OPT_K}${B_END})`,
+      // 5. "2.5 triệu", "2,5 củ", "3 triệu", "1 củ", "1.5tr"
       `(?<cuPlain>${B_START}\\d+(?:[.,]\\d+)?\\s*(?:củ|triệu|tr|m)${B_END})`,
       // 6. "1 trăm rưỡi", "1 lít rưỡi", "1 xị rưỡi" -> X.5 * 100,000
-      `(?<tramRuoi>${B_START}\\d+(?:[.,]\\d+)?\\s*(?:trăm(?:\\s*(?:nghìn|ngàn))?|lít|xị)\\s*rưỡi${B_END})`,
-      // 7. "1 trăm 2", "2 lít 5" -> X * 100,000 + Y * 10,000
-      `(?<tramLe>${B_START}\\d+\\s*(?:trăm|lít|xị)\\s*\\d{1,2}${B_END})`,
+      `(?<tramRuoi>${B_START}\\d+(?:[.,]\\d+)?\\s*(?:trăm(?:\\s*(?:nghìn|ngàn))?|lít|xị)\\s*rưỡi${OPT_K}${B_END})`,
+      // 7. "1 trăm 2", "2 lít 5", "1 trăm 50 nghìn" -> X * 100,000 + Y
+      `(?<tramLe>${B_START}\\d+\\s*(?:trăm|lít|xị)\\s*\\d{1,2}${OPT_K}${B_END})`,
       // 8. "3 lít", "2 trăm nghìn", "2 trăm" -> X * 100,000
       `(?<tramPlain>${B_START}\\d+(?:[.,]\\d+)?\\s*(?:trăm(?:\\s*(?:nghìn|ngàn|k))?|lít|xị)${B_END})`,
       // 9. "3 chục rưỡi" -> X.5 * 10,000
-      `(?<chucRuoi>${B_START}\\d+\\s*chục\\s*rưỡi${B_END})`,
+      `(?<chucRuoi>${B_START}\\d+\\s*chục\\s*rưỡi${OPT_K}${B_END})`,
       // 10. "5 chục" -> X * 10,000
-      `(?<chucPlain>${B_START}\\d+(?:[.,]\\d+)?\\s*chục${B_END})`,
-      // 11. "45k", "850 nghìn", "850 ngàn", "50 cành", "45k5"
+      `(?<chucPlain>${B_START}\\d+(?:[.,]\\d+)?\\s*chục${OPT_K}${B_END})`,
+      // 11. "45k5", "45k", "850 nghìn", "850 ngàn", "50 cành"
       `(?<nghinLe>${B_START}\\d+\\s*k\\s*\\d${B_END})`,
-      `(?<nghinPlain>${B_START}\\d+(?:[.,]\\d+)?\\s*(?:k|nghìn|nghin|ngàn|ngan|cành|canh)${B_END})`,
-      // 12. Formatted VND with dots/commas e.g. "150.000 đ", "1.250.000 đồng", "150000"
-      `(?<vndFull>${B_START}(?:\\d{1,3}(?:[.,]\\d{3})+|\\d{4,9})(?:\\s*(?:đồng|dong|vnđ|vnd|đ|d))?${B_END})`,
+      `(?<nghinPlain>${B_START}\\d+(?:[.,]\\d+)?\\s*(?:k|nghìn|nghin|ngàn|ngan|cành|canh)(?:\\s*(?:đồng|đ))?${B_END})`,
+      // 12. Explicit currency VND ("500 đ", "150.000đ", "1.250.000 đồng", "45000")
+      `(?<vndCurrency>${B_START}(?:\\d{1,3}(?:[.,]\\d{3})+|\\d{3,9})\\s*(?:đồng|dong|vnđ|vnd|đ)${B_END})`,
+      `(?<vndFull>${B_START}(?:\\d{1,3}(?:[.,]\\d{3})+|\\d{4,9})${B_END})`,
     ].join('|'),
     'gi'
   );
@@ -176,12 +195,21 @@ export function extractVietnameseAmounts(rawText: string): ExtractedAmountMatch[
     } else if (g.nghinPlain) {
       const m = g.nghinPlain.match(/(\d+(?:[.,]\d+)?)/);
       amount = m ? Math.round(parseNum(m[1]) * 1_000) : 0;
-    } else if (g.vndFull) {
-      const digitsOnly = g.vndFull.replace(/[^\d]/g, '');
+    } else if (g.vndCurrency) {
+      const digitsOnly = g.vndCurrency.replace(/[^\d]/g, '');
       amount = parseInt(digitsOnly, 10) || 0;
+    } else if (g.vndFull) {
+      // Avoid misreading calendar years like "năm 2026" as 2,026 VND
+      const beforeContext = normalized.slice(Math.max(0, match.index - 8), match.index).toLowerCase();
+      if (/năm\s*$/.test(beforeContext)) {
+        amount = 0;
+      } else {
+        const digitsOnly = g.vndFull.replace(/[^\d]/g, '');
+        amount = parseInt(digitsOnly, 10) || 0;
+      }
     }
 
-    if (amount > 0) {
+    if (amount > 0 && amount <= 100_000_000_000) {
       results.push({
         amount,
         rawMatch,
@@ -206,7 +234,7 @@ export function classifyVietnameseCategory(text: string): {
   categorySlug: CategorySlug;
   type: TransactionType;
 } {
-  // 1. Income keywords
+  // 1. Income keywords (check explicit income phrases first)
   if (
     hasKeyword(text, [
       'lương',
@@ -215,20 +243,82 @@ export function classifyVietnameseCategory(text: string): {
       'thuong',
       'học bổng',
       'hoc bong',
-      'biếu',
       'trợ cấp',
       'tro cap',
       'thu nhập',
+      'thu nhap',
       'nhận tiền',
+      'nhan tien',
+      'nhận được',
+      'được cho',
       'bán hàng',
       'hoàn tiền',
+      'cashback',
       'thù lao',
+      'thu lao',
+      'freelance',
+      'lãi tiết kiệm',
+      'cổ tức',
     ])
   ) {
     return { categorySlug: 'thu-nhap', type: 'income' };
   }
 
-  // 2. Đi chợ (Groceries / Market - especially common for parents/seniors)
+  // 2. Ready-to-eat dishes & drinks checked BEFORE raw market groceries (so "bánh mì trứng", "bún cá", "phở bò" map to Ăn uống)
+  if (
+    hasKeyword(text, [
+      'ăn',
+      'uống',
+      'phở',
+      'pho',
+      'bún',
+      'bun',
+      'bún chả',
+      'bún bò',
+      'bún đậu',
+      'bún cá',
+      'miến',
+      'hủ tiếu',
+      'mì quảng',
+      'xôi',
+      'cháo',
+      'cơm',
+      'com',
+      'cơm tấm',
+      'bánh',
+      'bánh mì',
+      'bánh cuốn',
+      'trà sữa',
+      'trà chanh',
+      'trà đá',
+      'matcha',
+      'cà phê',
+      'ca phe',
+      'coffee',
+      'cafe',
+      'bạc xỉu',
+      'highlands',
+      'phúc long',
+      'nhậu',
+      'lẩu',
+      'nướng',
+      'ăn sáng',
+      'ăn trưa',
+      'ăn tối',
+      'ăn vặt',
+      'căn tin',
+      'cantin',
+      'grabfood',
+      'shopeefood',
+      'gà rán',
+      'pizza',
+      'nước ngọt',
+    ])
+  ) {
+    return { categorySlug: 'an-uong', type: 'expense' };
+  }
+
+  // 3. Đi chợ (Raw groceries / Market)
   if (
     hasKeyword(text, [
       'đi chợ',
@@ -256,73 +346,50 @@ export function classifyVietnameseCategory(text: string): {
       'winmart',
       'coopmart',
       'bách hóa',
+      'bách hóa xanh',
+      'tiền chợ',
     ])
   ) {
     return { categorySlug: 'di-cho', type: 'expense' };
   }
 
-  // 3. Ăn uống (Dining out, drinks, snacks)
-  if (
-    hasKeyword(text, [
-      'ăn',
-      'uống',
-      'phở',
-      'pho',
-      'bún',
-      'bun',
-      'bún chả',
-      'bún bò',
-      'cơm',
-      'com',
-      'bánh',
-      'bánh mì',
-      'trà sữa',
-      'cà phê',
-      'ca phe',
-      'coffee',
-      'cafe',
-      'nhậu',
-      'lẩu',
-      'nướng',
-      'ăn sáng',
-      'ăn trưa',
-      'ăn tối',
-      'căn tin',
-      'cantin',
-    ])
-  ) {
-    return { categorySlug: 'an-uong', type: 'expense' };
-  }
-
-  // 4. Di chuyển (Transport, fuel, ride-hailing)
+  // 4. Di chuyển (Transport, fuel, ride-hailing, parking)
   if (
     hasKeyword(text, [
       'xăng',
       'xang',
       'đổ xăng',
+      'do xang',
       'grab',
       'xanh sm',
+      'be',
       'taxi',
+      'xe ôm',
       'xe buýt',
       'bus',
       'gửi xe',
+      'giữ xe',
       'vé xe',
       'tàu',
+      'vé máy bay',
       'sửa xe',
       'rửa xe',
       'thay nhớt',
       'di chuyển',
+      'cầu đường',
     ])
   ) {
     return { categorySlug: 'di-chuyen', type: 'expense' };
   }
 
-  // 5. Hóa đơn điện nước (Bills, rent, utilities, internet)
+  // 5. Hóa đơn điện nước (Bills, rent, utilities, phone, internet)
   if (
     hasKeyword(text, [
       'điện',
       'nước',
       'điện nước',
+      'tiền điện',
+      'tiền nước',
       'tiền nhà',
       'tiền phòng',
       'thuê nhà',
@@ -333,6 +400,11 @@ export function classifyVietnameseCategory(text: string): {
       'đóng tiền mạng',
       'cáp',
       'nạp thẻ',
+      'nạp điện thoại',
+      'tiền điện thoại',
+      'cước 4g',
+      'đăng ký 4g',
+      'sim',
       'hóa đơn',
       'rác',
       'phí dịch vụ',
@@ -341,7 +413,7 @@ export function classifyVietnameseCategory(text: string): {
     return { categorySlug: 'hoa-don', type: 'expense' };
   }
 
-  // 6. Học tập (Tuition, books, courses, stationery)
+  // 6. Học tập (Tuition, books, courses, stationery, AI tools)
   if (
     hasKeyword(text, [
       'học phí',
@@ -363,33 +435,40 @@ export function classifyVietnameseCategory(text: string): {
       'chatgpt',
       'gemini',
       'server',
+      'tên miền',
+      'văn phòng phẩm',
     ])
   ) {
     return { categorySlug: 'hoc-tap', type: 'expense' };
   }
 
-  // 7. Sức khỏe (Medicine, hospital, pharmacy)
+  // 7. Sức khỏe (Medicine, hospital, pharmacy, fitness)
   if (
     hasKeyword(text, [
       'thuốc',
       'thuoc',
       'mua thuốc',
       'khám',
+      'khám bệnh',
       'bệnh viện',
       'nha khoa',
       'răng',
       'vitamin',
+      'thực phẩm chức năng',
       'huyết áp',
       'bảo hiểm y tế',
       'sức khỏe',
       'gym',
+      'tập gym',
       'thể thao',
+      'cầu lông',
+      'bơi',
     ])
   ) {
     return { categorySlug: 'suc-khoe', type: 'expense' };
   }
 
-  // 8. Gia đình (Family gifts, filial support, đám cưới, mừng tuổi)
+  // 8. Gia đình / Hiếu hỉ / Quà tặng
   if (
     hasKeyword(text, [
       'gia đình',
@@ -402,13 +481,15 @@ export function classifyVietnameseCategory(text: string): {
       'hiếu hỉ',
       'lì xì',
       'quà tết',
+      'sinh nhật',
+      'tặng quà',
       'sữa cho',
     ])
   ) {
     return { categorySlug: 'gia-dinh', type: 'expense' };
   }
 
-  // 9. Mua sắm (Clothes, electronics, Shopee/Lazada, household items)
+  // 9. Mua sắm (Clothes, electronics, e-commerce, personal care)
   if (
     hasKeyword(text, [
       'mua sắm',
@@ -420,11 +501,20 @@ export function classifyVietnameseCategory(text: string): {
       'túi',
       'shopee',
       'lazada',
+      'tiki',
       'tiktok shop',
       'mỹ phẩm',
+      'sữa rửa mặt',
+      'kem chống nắng',
       'dầu gội',
       'xà phòng',
+      'nước giặt',
+      'cắt tóc',
+      'gội đầu',
       'đồ gia dụng',
+      'tai nghe',
+      'chuột',
+      'bàn phím',
     ])
   ) {
     return { categorySlug: 'mua-sam', type: 'expense' };
@@ -454,7 +544,7 @@ function cleanClauseDescription(rawClause: string, matchedMoneyText: string): st
   let desc = rawClause.replace(matchedMoneyText, ' ');
   desc = desc
     .replace(
-      /^(?:sáng|trưa|chiều|tối|đêm|hôm nay|hôm qua|vừa|mới|rồi|với|và|cùng|thêm|lại|còn|tiếp|nữa|\s|,|\.|;|-)+/gi,
+      /^(?:sáng|trưa|chiều|tối|đêm|hôm nay|hôm qua|vừa|mới|rồi|với|và|cùng|thêm|lại|còn|tiếp|nữa|tôi|mình|em|con|\s|,|\.|;|-)+/gi,
       ''
     )
     .replace(/(?:\s+hết|\s+mất|\s+tất cả|\s+giá|\s+khoảng|\s+tầm)\s*$/gi, '')
@@ -468,8 +558,7 @@ function cleanClauseDescription(rawClause: string, matchedMoneyText: string): st
 }
 
 /**
- * Main local Vietnamese NLP parser that supports single & multi-transaction utterances.
- * Example: "sáng mua rau 35 nghìn với mua thịt bò 1 trăm rưỡi" -> 2 structured items.
+ * Main local Vietnamese NLP parser (< 1ms execution) that supports single & multi-transaction utterances.
  */
 export function parseVietnameseExpenseText(rawText: string, nowIso?: string): ParsedExpenseItem[] {
   const timestamp = nowIso || new Date().toISOString();
@@ -522,7 +611,7 @@ export function parseVietnameseExpenseText(rawText: string, nowIso?: string): Pa
 
 export function buildSpokenSummaryVi(items: ParsedExpenseItem[]): string {
   if (items.length === 0) {
-    return 'Xin lỗi, hệ thống chưa nghe rõ số tiền. Xin vui lòng nói lại.';
+    return 'Hệ thống chưa nghe rõ số tiền. Bạn hãy nói kèm số tiền (ví dụ: ăn sáng 45 nghìn).';
   }
   if (items.length === 1) {
     return items[0].spokenConfirmationVi + '.';

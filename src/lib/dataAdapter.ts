@@ -1,5 +1,6 @@
 import { CATEGORY_BY_SLUG } from '../data/categories';
 import type {
+  AccountBackupPayload,
   CategorySlug,
   FinanceTransaction,
   ParsedExpenseItem,
@@ -32,6 +33,15 @@ const USERS_KEY_V2 = 'finance_pro_users_v2';
 const SESSION_KEY_V2 = 'finance_pro_session_v2';
 const WALLETS_KEY_V2 = 'finance_pro_wallets_v2';
 const TXS_KEY_V2 = 'finance_pro_txs_v2';
+
+export const AVATAR_COLOR_PRESETS = [
+  '#4F46E5', // Indigo Gemini
+  '#2563EB', // Cobalt Blue
+  '#7C3AED', // Violet
+  '#0D9488', // Emerald Teal
+  '#E11D48', // Coral Rose
+  '#D97706', // Warm Amber
+];
 
 export interface StoredAccountV2 {
   profile: UserProfile;
@@ -85,7 +95,13 @@ function upsertLocalUserAccount(profile: UserProfile, passwordHash: string): voi
       normalizeEmailInput(u.profile.email) === cleanEmail
   );
   if (idx >= 0) {
-    users[idx] = { profile, passwordHash: passwordHash || users[idx].passwordHash };
+    users[idx] = {
+      profile: {
+        ...users[idx].profile,
+        ...profile,
+      },
+      passwordHash: passwordHash || users[idx].passwordHash,
+    };
     saveUsersV2(users);
   } else {
     saveUsersV2([...users, { profile, passwordHash }]);
@@ -130,18 +146,17 @@ function saveTransactionsV2(txs: FinanceTransaction[]): void {
 
 function getPersonalWalletsForUserV2(userId: string): Wallet[] {
   const all = loadWalletsV2();
-  // Filter to personal/savings wallets owned by this user
   return all.filter((w) => w.ownerId === userId && w.type !== 'family');
 }
 
-function ensureUserPersonalWalletV2(userId: string, displayName: string): Wallet[] {
+function ensureUserPersonalWalletV2(userId: string): Wallet[] {
   const existing = getPersonalWalletsForUserV2(userId);
   if (existing.length > 0) return existing;
 
   const now = new Date().toISOString();
   const personalWallet: Wallet = {
     id: `w-personal-${userId}`,
-    name: `Ví Cá Nhân`,
+    name: 'Ví Cá Nhân',
     type: 'personal',
     ownerId: userId,
     memberIds: [userId],
@@ -165,12 +180,15 @@ export const FinanceRepository = {
   /**
    * List saved user profiles on this browser (without exposing password hashes)
    */
-  getSavedAccountsPreview(): Array<Pick<UserProfile, 'id' | 'email' | 'displayName' | 'avatarText'>> {
+  getSavedAccountsPreview(): Array<
+    Pick<UserProfile, 'id' | 'email' | 'displayName' | 'avatarText' | 'avatarColor'>
+  > {
     return loadUsersV2().map((u) => ({
       id: u.profile.id,
       email: u.profile.email,
       displayName: u.profile.displayName,
       avatarText: u.profile.avatarText,
+      avatarColor: u.profile.avatarColor || AVATAR_COLOR_PRESETS[0],
     }));
   },
 
@@ -201,12 +219,12 @@ export const FinanceRepository = {
           localProfile = found.profile;
         }
       } else if (rawSession) {
-        // Tampered or expired session token -> remove it
+        // Tampered or expired session token -> clear immediately
         localStorage.removeItem(SESSION_KEY_V2);
       }
     }
 
-    // 2. Check Supabase Auth session if configured
+    // 2. Check Supabase Auth session if configured and compatible with active local session
     const supabase = getSupabaseBrowserClient();
     if (supabase) {
       try {
@@ -215,83 +233,92 @@ export const FinanceRepository = {
         } = await supabase.auth.getUser();
 
         if (user) {
-          const { data: profileRow } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', user.id)
-            .single();
+          const sbEmail = normalizeEmailInput(user.email || '');
+          const localMatchesSupabase =
+            !localProfile ||
+            localProfile.id === user.id ||
+            normalizeEmailInput(localProfile.email) === sbEmail;
 
-          const { data: walletRows, error: walletErr } = await supabase
-            .from('wallets')
-            .select('*')
-            .eq('owner_id', user.id)
-            .neq('type', 'family')
-            .order('created_at', { ascending: true });
+          if (localMatchesSupabase) {
+            const { data: profileRow } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', user.id)
+              .single();
 
-          const displayName = sanitizeUserText(
-            profileRow?.display_name ||
-              user.user_metadata?.display_name ||
-              localProfile?.displayName ||
-              user.email?.split('@')[0] ||
-              'Người dùng',
-            80
-          );
+            const { data: walletRows, error: walletErr } = await supabase
+              .from('wallets')
+              .select('*')
+              .eq('owner_id', user.id)
+              .neq('type', 'family')
+              .order('created_at', { ascending: true });
 
-          const uiMode: UIMode =
-            profileRow?.ui_mode === 'senior' ||
-            user.user_metadata?.ui_mode === 'senior' ||
-            localProfile?.uiMode === 'senior'
-              ? 'senior'
-              : 'standard';
+            const displayName = sanitizeUserText(
+              profileRow?.display_name ||
+                user.user_metadata?.display_name ||
+                localProfile?.displayName ||
+                user.email?.split('@')[0] ||
+                'Người dùng',
+              80
+            );
 
-          let wallets: Wallet[] = [];
-          if (!walletErr && walletRows && walletRows.length > 0) {
-            wallets = walletRows.map((w) => ({
-              id: w.id,
-              name: w.name.replace(/\s*\([^)]*\)\s*$/, '') || 'Ví Cá Nhân',
-              type: (w.type as WalletType) || 'personal',
-              ownerId: w.owner_id,
-              memberIds: [w.owner_id],
-              monthlyBudget: Number(w.monthly_budget) || 0,
-              weeklyBudget: Number(w.weekly_budget) || 0,
-              createdAt: w.created_at,
-            }));
-          } else {
-            wallets = ensureUserPersonalWalletV2(user.id, displayName);
+            const uiMode: UIMode =
+              profileRow?.ui_mode === 'senior' ||
+              user.user_metadata?.ui_mode === 'senior' ||
+              localProfile?.uiMode === 'senior'
+                ? 'senior'
+                : 'standard';
+
+            let wallets: Wallet[] = [];
+            if (!walletErr && walletRows && walletRows.length > 0) {
+              wallets = walletRows.map((w) => ({
+                id: w.id,
+                name: w.name.replace(/\s*\([^)]*\)\s*$/, '') || 'Ví Cá Nhân',
+                type: (w.type as WalletType) || 'personal',
+                ownerId: w.owner_id,
+                memberIds: [w.owner_id],
+                monthlyBudget: Number(w.monthly_budget) || 0,
+                weeklyBudget: Number(w.weekly_budget) || 0,
+                createdAt: w.created_at,
+              }));
+            } else {
+              wallets = ensureUserPersonalWalletV2(user.id);
+            }
+
+            const profile: UserProfile = {
+              id: user.id,
+              email: sbEmail || localProfile?.email || '',
+              displayName,
+              roleLabel: uiMode === 'senior' ? 'Giao diện Đơn giản' : 'Giao diện Chi tiết',
+              avatarText: getAvatarInitials(displayName),
+              avatarColor: localProfile?.avatarColor || AVATAR_COLOR_PRESETS[0],
+              uiMode,
+              defaultWalletId: wallets[0]?.id || '',
+              createdAt:
+                profileRow?.created_at ||
+                localProfile?.createdAt ||
+                new Date().toISOString(),
+            };
+
+            if (typeof window !== 'undefined') {
+              const token = await createSignedSessionToken(profile.id, profile.email);
+              localStorage.setItem(SESSION_KEY_V2, token);
+            }
+
+            return {
+              profile,
+              wallets,
+              isCloud: !walletErr && Boolean(walletRows && walletRows.length > 0),
+            };
           }
-
-          const profile: UserProfile = {
-            id: user.id,
-            email: normalizeEmailInput(user.email || localProfile?.email || ''),
-            displayName,
-            roleLabel: uiMode === 'senior' ? 'Giao diện Đơn giản' : 'Giao diện Chi tiết',
-            avatarText: getAvatarInitials(displayName),
-            uiMode,
-            defaultWalletId: wallets[0]?.id || '',
-            createdAt: profileRow?.created_at || new Date().toISOString(),
-          };
-
-          if (typeof window !== 'undefined') {
-            const token = await createSignedSessionToken(profile.id, profile.email);
-            localStorage.setItem(SESSION_KEY_V2, token);
-          }
-
-          return {
-            profile,
-            wallets,
-            isCloud: !walletErr && Boolean(walletRows && walletRows.length > 0),
-          };
         }
       } catch {
-        // Fallback to local session if network/Supabase table isn't ready
+        // Fallback to verified local session if Supabase is unavailable
       }
     }
 
     if (localProfile) {
-      const wallets = ensureUserPersonalWalletV2(
-        localProfile.id,
-        localProfile.displayName
-      );
+      const wallets = ensureUserPersonalWalletV2(localProfile.id);
       return {
         profile: localProfile,
         wallets,
@@ -317,8 +344,8 @@ export const FinanceRepository = {
       sanitizeUserText(params.displayName, 80) || cleanEmail.split('@')[0];
     const uiMode: UIMode = params.uiMode === 'senior' ? 'senior' : 'standard';
 
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      throw new Error('Vui lòng nhập địa chỉ email hợp lệ.');
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      throw new Error('Vui lòng nhập đúng định dạng Email (ví dụ: ten@gmail.com).');
     }
     if (!cleanPassword || cleanPassword.length < 6) {
       throw new Error('Mật khẩu cần có tối thiểu 6 ký tự để đảm bảo an toàn.');
@@ -329,7 +356,6 @@ export const FinanceRepository = {
       (u) => normalizeEmailInput(u.profile.email) === cleanEmail
     );
 
-    // If email already exists locally AND the user entered the right password, sign them right in!
     if (existingLocal) {
       const check = await verifyPasswordSecure(
         cleanPassword,
@@ -339,7 +365,7 @@ export const FinanceRepository = {
         return this.signInUser({ email: cleanEmail, password: cleanPassword });
       }
       throw new Error(
-        'Email này đã được đăng ký trước đó. Vui lòng chuyển sang tab "Đăng nhập" hoặc bấm "Đặt lại mật khẩu".'
+        'Email này đã được đăng ký trước đó. Vui lòng chuyển sang tab "Đăng nhập" hoặc chọn "Đặt lại mật khẩu".'
       );
     }
 
@@ -351,6 +377,7 @@ export const FinanceRepository = {
     const supabase = getSupabaseBrowserClient();
     if (supabase) {
       try {
+        await supabase.auth.signOut().catch(() => {});
         const { data, error } = await supabase.auth.signUp({
           email: cleanEmail,
           password: cleanPassword,
@@ -389,7 +416,6 @@ export const FinanceRepository = {
           error &&
           error.message.toLowerCase().includes('already registered')
         ) {
-          // Account already exists in Supabase -> try signing in with the provided password
           const signInAttempt = await supabase.auth.signInWithPassword({
             email: cleanEmail,
             password: cleanPassword,
@@ -400,14 +426,12 @@ export const FinanceRepository = {
           }
         }
       } catch {
-        // Proceed with local multi-user account creation so registration never blocks
+        // Proceed smoothly with local PBKDF2 account creation
       }
     }
 
     const wallets =
-      cloudWallets.length > 0
-        ? cloudWallets
-        : ensureUserPersonalWalletV2(userId, cleanName);
+      cloudWallets.length > 0 ? cloudWallets : ensureUserPersonalWalletV2(userId);
 
     const newProfile: UserProfile = {
       id: userId,
@@ -415,6 +439,8 @@ export const FinanceRepository = {
       displayName: cleanName,
       roleLabel: uiMode === 'senior' ? 'Giao diện Đơn giản' : 'Giao diện Chi tiết',
       avatarText: getAvatarInitials(cleanName),
+      avatarColor:
+        AVATAR_COLOR_PRESETS[existingUsers.length % AVATAR_COLOR_PRESETS.length],
       uiMode,
       defaultWalletId: wallets[0].id,
       createdAt: new Date().toISOString(),
@@ -453,7 +479,6 @@ export const FinanceRepository = {
       (u) => normalizeEmailInput(u.profile.email) === cleanEmail
     );
 
-    // 1. Try Supabase Auth first if configured
     const supabase = getSupabaseBrowserClient();
     if (supabase) {
       try {
@@ -462,7 +487,6 @@ export const FinanceRepository = {
           password: cleanPassword,
         });
 
-        // If exact password had accidental leading/trailing space, retry with trimmed password
         if (
           authRes.error &&
           cleanPassword.trim() !== cleanPassword &&
@@ -477,7 +501,6 @@ export const FinanceRepository = {
         if (!authRes.error && authRes.data.user) {
           const sbUser = authRes.data.user;
 
-          // Fetch profile & personal wallets directly without a second getUser() call
           const { data: profileRow } = await supabase
             .from('profiles')
             .select('*')
@@ -519,7 +542,7 @@ export const FinanceRepository = {
               createdAt: w.created_at,
             }));
           } else {
-            wallets = ensureUserPersonalWalletV2(sbUser.id, displayName);
+            wallets = ensureUserPersonalWalletV2(sbUser.id);
           }
 
           const profile: UserProfile = {
@@ -529,6 +552,7 @@ export const FinanceRepository = {
             roleLabel:
               uiMode === 'senior' ? 'Giao diện Đơn giản' : 'Giao diện Chi tiết',
             avatarText: getAvatarInitials(displayName),
+            avatarColor: localMatch?.profile.avatarColor || AVATAR_COLOR_PRESETS[0],
             uiMode,
             defaultWalletId: wallets[0]?.id || '',
             createdAt:
@@ -537,7 +561,6 @@ export const FinanceRepository = {
               new Date().toISOString(),
           };
 
-          // Sync PBKDF2 hash locally so offline/fast login always stays in sync
           const freshHash = await hashPasswordSecure(cleanPassword);
           upsertLocalUserAccount(profile, freshHash);
 
@@ -557,10 +580,9 @@ export const FinanceRepository = {
       }
     }
 
-    // 2. Verify against Local Multi-User Account Registry (PBKDF2-SHA256)
     if (!localMatch) {
       throw new Error(
-        'Tài khoản với email này chưa được đăng ký trên hệ thống. Bạn hãy bấm sang mục "Đăng ký" (chỉ mất 5 giây) để khởi tạo tài khoản.'
+        'Chưa tìm thấy tài khoản cho Email này trên thiết bị. Bạn hãy bấm "Đăng ký nhanh" (chỉ 3 thông tin) để bắt đầu ngay.'
       );
     }
 
@@ -571,14 +593,18 @@ export const FinanceRepository = {
 
     if (!verification.valid) {
       throw new Error(
-        'Mật khẩu chưa chính xác. Bạn có thể bấm biểu tượng 👁️ để kiểm tra ký tự hoặc chọn "Đặt lại mật khẩu" bên dưới.'
+        'Mật khẩu chưa chính xác. Bấm biểu tượng con mắt để kiểm tra hoặc chọn "Đặt lại mật khẩu".'
       );
     }
 
-    // Automatically upgrade legacy hash to PBKDF2-SHA256 if needed
     if (verification.needsRehash) {
       const upgradedHash = await hashPasswordSecure(cleanPassword);
       upsertLocalUserAccount(localMatch.profile, upgradedHash);
+    }
+
+    // Clear any stale Supabase cookie belonging to a different user
+    if (supabase) {
+      await supabase.auth.signOut().catch(() => {});
     }
 
     if (typeof window !== 'undefined') {
@@ -589,10 +615,7 @@ export const FinanceRepository = {
       localStorage.setItem(SESSION_KEY_V2, token);
     }
 
-    const wallets = ensureUserPersonalWalletV2(
-      localMatch.profile.id,
-      localMatch.profile.displayName
-    );
+    const wallets = ensureUserPersonalWalletV2(localMatch.profile.id);
 
     return {
       profile: localMatch.profile,
@@ -602,7 +625,7 @@ export const FinanceRepository = {
   },
 
   /**
-   * Self-service Password Reset so a user is never locked out of their personal account
+   * Self-service Password Reset from Login Screen
    */
   async resetUserPassword(params: {
     email: string;
@@ -611,7 +634,7 @@ export const FinanceRepository = {
     const cleanEmail = normalizeEmailInput(params.email);
     const cleanPassword = normalizePasswordInput(params.newPassword);
 
-    if (!cleanEmail || !cleanEmail.includes('@')) {
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       throw new Error('Vui lòng nhập đúng địa chỉ Email cần đặt lại mật khẩu.');
     }
     if (!cleanPassword || cleanPassword.length < 6) {
@@ -634,10 +657,7 @@ export const FinanceRepository = {
         );
         localStorage.setItem(SESSION_KEY_V2, token);
       }
-      const wallets = ensureUserPersonalWalletV2(
-        localMatch.profile.id,
-        localMatch.profile.displayName
-      );
+      const wallets = ensureUserPersonalWalletV2(localMatch.profile.id);
       return {
         profile: localMatch.profile,
         wallets,
@@ -645,13 +665,151 @@ export const FinanceRepository = {
       };
     }
 
-    // If the email wasn't in local storage yet, create/provision the account with the new password
     return this.signUpUser({
       displayName: cleanEmail.split('@')[0],
       email: cleanEmail,
       password: cleanPassword,
       uiMode: 'standard',
     });
+  },
+
+  /**
+   * Update profile details (Display Name, Avatar Color, Default UI Mode) while logged in
+   */
+  async updateUserProfile(
+    userId: string,
+    updates: Partial<Pick<UserProfile, 'displayName' | 'avatarColor' | 'uiMode' | 'defaultWalletId'>>
+  ): Promise<UserProfile | null> {
+    const users = loadUsersV2();
+    let updatedProfile: UserProfile | null = null;
+
+    const next = users.map((u) => {
+      if (u.profile.id === userId) {
+        const nextName =
+          updates.displayName !== undefined
+            ? sanitizeUserText(updates.displayName, 80) || u.profile.displayName
+            : u.profile.displayName;
+        const nextUiMode = updates.uiMode ?? u.profile.uiMode;
+        updatedProfile = {
+          ...u.profile,
+          ...updates,
+          displayName: nextName,
+          avatarText: getAvatarInitials(nextName),
+          roleLabel:
+            nextUiMode === 'senior' ? 'Giao diện Đơn giản' : 'Giao diện Chi tiết',
+        };
+        return { ...u, profile: updatedProfile };
+      }
+      return u;
+    });
+    saveUsersV2(next);
+
+    const supabase = getSupabaseBrowserClient();
+    if (supabase && !userId.startsWith('user-')) {
+      try {
+        await supabase
+          .from('profiles')
+          .update({
+            ...(updates.displayName !== undefined
+              ? { display_name: sanitizeUserText(updates.displayName, 80) }
+              : {}),
+            ...(updates.uiMode !== undefined ? { ui_mode: updates.uiMode } : {}),
+            ...(updates.defaultWalletId !== undefined
+              ? { default_wallet_id: updates.defaultWalletId }
+              : {}),
+          })
+          .eq('id', userId);
+      } catch {
+        // ignore network errors
+      }
+    }
+
+    return updatedProfile;
+  },
+
+  /**
+   * Change password cleanly from inside Account Center after verifying current password
+   */
+  async changePasswordLoggedIn(params: {
+    userId: string;
+    currentPassword: string;
+    newPassword: string;
+  }): Promise<void> {
+    const cleanCurrent = normalizePasswordInput(params.currentPassword);
+    const cleanNew = normalizePasswordInput(params.newPassword);
+
+    if (!cleanNew || cleanNew.length < 6) {
+      throw new Error('Mật khẩu mới cần có tối thiểu 6 ký tự.');
+    }
+
+    const users = loadUsersV2();
+    const account = users.find((u) => u.profile.id === params.userId);
+    if (!account) {
+      throw new Error('Không tìm thấy thông tin tài khoản hiện tại.');
+    }
+
+    const verifyCurrent = await verifyPasswordSecure(cleanCurrent, account.passwordHash);
+    if (!verifyCurrent.valid) {
+      throw new Error('Mật khẩu hiện tại chưa chính xác.');
+    }
+
+    const freshHash = await hashPasswordSecure(cleanNew);
+    upsertLocalUserAccount(account.profile, freshHash);
+
+    const supabase = getSupabaseBrowserClient();
+    if (supabase && !params.userId.startsWith('user-')) {
+      try {
+        await supabase.auth.updateUser({ password: cleanNew });
+      } catch {
+        // Local PBKDF2 hash already updated safely
+      }
+    }
+  },
+
+  /**
+   * Delete current user's personal account and isolated financial records
+   */
+  async deleteUserAccount(userId: string): Promise<void> {
+    const users = loadUsersV2();
+    saveUsersV2(users.filter((u) => u.profile.id !== userId));
+
+    const wallets = loadWalletsV2();
+    const ownedWalletIds = new Set(
+      wallets.filter((w) => w.ownerId === userId).map((w) => w.id)
+    );
+    saveWalletsV2(wallets.filter((w) => w.ownerId !== userId));
+
+    const txs = loadTransactionsV2();
+    saveTransactionsV2(
+      txs.filter((t) => t.userId !== userId && !ownedWalletIds.has(t.walletId))
+    );
+
+    await this.signOutUser();
+  },
+
+  /**
+   * Export strict single-user JSON backup
+   */
+  async exportAccountBackupJson(userId: string): Promise<AccountBackupPayload> {
+    const users = loadUsersV2();
+    const account = users.find((u) => u.profile.id === userId);
+    if (!account) {
+      throw new Error('Không tìm thấy hồ sơ tài khoản để sao lưu.');
+    }
+
+    const wallets = getPersonalWalletsForUserV2(userId);
+    const walletIds = new Set(wallets.map((w) => w.id));
+    const allTxs = loadTransactionsV2().filter(
+      (t) => t.userId === userId || walletIds.has(t.walletId)
+    );
+
+    return {
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      profile: account.profile,
+      wallets,
+      transactions: allTxs,
+    };
   },
 
   /**
@@ -671,39 +829,10 @@ export const FinanceRepository = {
     }
   },
 
-  /**
-   * Update user's preferred UI Mode (Giao diện Chi tiết vs Giao diện Đơn giản)
-   */
   async updateUserUiMode(userId: string, uiMode: UIMode): Promise<UserProfile | null> {
-    const users = loadUsersV2();
-    let updatedProfile: UserProfile | null = null;
-    const next = users.map((u) => {
-      if (u.profile.id === userId) {
-        updatedProfile = {
-          ...u.profile,
-          uiMode,
-          roleLabel: uiMode === 'senior' ? 'Giao diện Đơn giản' : 'Giao diện Chi tiết',
-        };
-        return { ...u, profile: updatedProfile };
-      }
-      return u;
-    });
-    saveUsersV2(next);
-
-    const supabase = getSupabaseBrowserClient();
-    if (supabase && !userId.startsWith('user-')) {
-      try {
-        await supabase.from('profiles').update({ ui_mode: uiMode }).eq('id', userId);
-      } catch {
-        // ignore
-      }
-    }
-    return updatedProfile;
+    return this.updateUserProfile(userId, { uiMode });
   },
 
-  /**
-   * Create an additional personal wallet (e.g. Ví Tiền Mặt, Tài Khoản Ngân Hàng, Quỹ Tiết Kiệm)
-   */
   async createWallet(params: {
     userId: string;
     name: string;
@@ -763,6 +892,61 @@ export const FinanceRepository = {
     const all = loadWalletsV2();
     saveWalletsV2([...all, newWallet]);
     return newWallet;
+  },
+
+  async renameWallet(walletId: string, userId: string, newName: string): Promise<void> {
+    const clean = sanitizeUserText(newName, 60);
+    if (!clean) throw new Error('Tên ví không được để trống.');
+
+    const all = loadWalletsV2();
+    saveWalletsV2(
+      all.map((w) =>
+        w.id === walletId && w.ownerId === userId ? { ...w, name: clean } : w
+      )
+    );
+
+    const supabase = getSupabaseBrowserClient();
+    if (supabase && !walletId.startsWith('w-')) {
+      try {
+        await supabase
+          .from('wallets')
+          .update({ name: clean })
+          .eq('id', walletId)
+          .eq('owner_id', userId);
+      } catch {
+        // ignore
+      }
+    }
+  },
+
+  async deleteWallet(walletId: string, userId: string): Promise<void> {
+    const userWallets = getPersonalWalletsForUserV2(userId);
+    if (userWallets.length <= 1) {
+      throw new Error('Không thể xóa ví cá nhân duy nhất của tài khoản.');
+    }
+    const target = userWallets.find((w) => w.id === walletId);
+    if (!target) {
+      throw new Error('Không tìm thấy ví hoặc bạn không có quyền xóa.');
+    }
+
+    const allWallets = loadWalletsV2();
+    saveWalletsV2(allWallets.filter((w) => w.id !== walletId));
+
+    const allTxs = loadTransactionsV2();
+    saveTransactionsV2(allTxs.filter((t) => t.walletId !== walletId));
+
+    const supabase = getSupabaseBrowserClient();
+    if (supabase && !walletId.startsWith('w-')) {
+      try {
+        await supabase
+          .from('wallets')
+          .delete()
+          .eq('id', walletId)
+          .eq('owner_id', userId);
+      } catch {
+        // ignore
+      }
+    }
   },
 
   async getTransactions(walletId: string, userId?: string): Promise<FinanceTransaction[]> {
@@ -920,7 +1104,7 @@ export const FinanceRepository = {
   async updateTransaction(
     id: string,
     updates: Partial<
-      Pick<FinanceTransaction, 'amount' | 'description' | 'categorySlug' | 'type'>
+      Pick<FinanceTransaction, 'amount' | 'description' | 'categorySlug' | 'type' | 'transactionDate'>
     >
   ): Promise<void> {
     const supabase = getSupabaseBrowserClient();
@@ -938,6 +1122,9 @@ export const FinanceRepository = {
               ? { description: sanitizeUserText(updates.description, 200) }
               : {}),
             ...(updates.type !== undefined ? { type: updates.type } : {}),
+            ...(updates.transactionDate !== undefined
+              ? { transaction_date: updates.transactionDate }
+              : {}),
             ...(cat ? { category_id: cat.id, category_slug: cat.slug } : {}),
           })
           .eq('id', id);
